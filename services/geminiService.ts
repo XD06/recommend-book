@@ -3,9 +3,11 @@ import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation } from 
 import { v4 as uuidv4 } from 'uuid';
 
 // Initialize OpenAI client pointing to DeepSeek API
-// Using the specific key provided for the test environment
+// 优先使用环境变量 VITE_DEEPSEEK_API_KEY，如果不存在则使用硬编码的 Key 作为兜底（仅供演示，生产环境请在 Netlify 环境变量中设置）
+const apiKey = import.meta.env.VITE_DEEPSEEK_API_KEY || "sk-a4e54f01705a4f1e8c91bb84f9e580b5";
+
 const client = new OpenAI({
-  apiKey: "sk-a4e54f01705a4f1e8c91bb84f9e580b5",
+  apiKey: apiKey,
   baseURL: "https://api.deepseek.com",
   dangerouslyAllowBrowser: true
 });
