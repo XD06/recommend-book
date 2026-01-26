@@ -56,6 +56,7 @@ export interface CategoryMeta {
 export interface Recommendation {
   title: string;
   author: string;
+  publisher: string; // 新增：推荐的具体版本/出版社/译者
   reason: string;
   level: BookLevel;
 }

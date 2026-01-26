@@ -154,20 +154,22 @@ export const recommendBooks = async (currentBooks: Book[], categoryName: string)
 你是一个严谨的学术顾问和图书管理员。用户对 "${categoryName}" 领域感兴趣，但书单可能不完整。
 请分析已有的书单，推荐 3-5 本**绝对经典、经过时间考验的权威著作**来填补知识盲区。
 
-**严格要求**：
-1. **只推荐经典**：必须是该领域的基石之作、教科书级著作或学术界公认经典。
-2. **严禁网红书**：绝对不要推荐畅销快餐书、网红心理学、成功学或肤浅的通俗读物。
-3. **补充缺口**：推荐的书籍应能补充当前书单未覆盖的重要子领域或深度。
-4. **难度分级**：准确评估难度。
+**严格推荐规则**：
+1. **推荐领域经典**：必须是全球范围内该领域的基石之作（不限于中国著作，也不限于外国著作）。
+2. **优先推荐中文版**：书名请提供中文名称。
+3. **指定最佳版本**：对于外文翻译作品，**必须**明确指出最佳/最权威的中译本（例如：译者姓名、出版社）。例如：“商务印书馆 - 汉译世界学术名著丛书”或“某某 译”。这是必须的，因为烂翻译会毁了经典。
+4. **严禁网红书**：绝对不要推荐畅销快餐书、成功学或肤浅的通俗读物。
+5. **补充缺口**：推荐的书籍应能补充当前书单未覆盖的重要子领域或深度。
 
 必须严格按照 JSON 格式输出。
 JSON 结构：
 {
   "recommendations": [
     {
-      "title": "书名",
+      "title": "书名(中文)",
       "author": "作者",
-      "reason": "推荐理由（中文，说明其经典地位及填补了什么空白）",
+      "publisher": "推荐的最佳中文版本/出版社/译者 (例如: '商务印书馆 - 何兆武译')",
+      "reason": "推荐理由（中文，详细说明该书的经典地位，以及为什么推荐这个特定的版本）",
       "level": "Basic" | "Advanced" | "Expert"
     }
   ]
@@ -175,7 +177,7 @@ JSON 结构：
   `;
 
   const simplifiedBooks = currentBooks.map(b => ({ title: b.title, author: b.author }));
-  const userPrompt = `当前已拥有的 "${categoryName}" 书籍：\n${JSON.stringify(simplifiedBooks)}\n请推荐经典书籍补充。`;
+  const userPrompt = `当前已拥有的 "${categoryName}" 书籍：\n${JSON.stringify(simplifiedBooks)}\n请推荐经典书籍补充，务必指名最佳版本。`;
 
   try {
     const response = await client.chat.completions.create({

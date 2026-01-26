@@ -4,7 +4,7 @@ import { IngestionWizard } from './components/IngestionWizard';
 import { BookCard } from './components/BookCard';
 import { BookDetail } from './components/BookDetail';
 import { LibraryTable } from './components/LibraryTable';
-import { Library, LayoutGrid, Plus, BookOpen, Layers, Table2, BarChart3, Sparkles, ArrowRight, XCircle, GraduationCap } from 'lucide-react';
+import { Library, LayoutGrid, Plus, BookOpen, Layers, Table2, BarChart3, Sparkles, ArrowRight, XCircle, GraduationCap, Building2 } from 'lucide-react';
 import { Button } from './components/Button';
 import { generateReadingPath, recommendBooks, reorganizeLibrary } from './services/geminiService';
 import { v4 as uuidv4 } from 'uuid';
@@ -213,6 +213,7 @@ const App: React.FC = () => {
       id: uuidv4(),
       title: rec.title,
       author: rec.author,
+      publisher: rec.publisher, // 自动填充推荐的出版社/版本
       category: selectedCategory || '未分类',
       level: rec.level,
       status: BookStatus.UNREAD
@@ -569,12 +570,18 @@ const App: React.FC = () => {
                              </span>
                           </div>
                           <h4 className="font-bold text-lg text-slate-900">{rec.title}</h4>
-                          <p className="text-sm text-slate-600 mb-2">{rec.author}</p>
-                          <p className="text-xs text-indigo-700 bg-indigo-50 p-2 rounded-lg leading-relaxed">
-                             <span className="font-bold mr-1">推荐理由:</span>{rec.reason}
+                          <div className="flex flex-col gap-1 mb-2">
+                             <p className="text-sm text-slate-600">{rec.author}</p>
+                             <p className="text-xs text-indigo-700 flex items-center bg-indigo-50/50 w-fit px-1.5 py-0.5 rounded">
+                                <Building2 size={12} className="mr-1.5" /> 
+                                {rec.publisher}
+                             </p>
+                          </div>
+                          <p className="text-xs text-slate-500 bg-slate-50 p-2 rounded-lg leading-relaxed border border-slate-100">
+                             <span className="font-bold mr-1 text-slate-700">推荐理由:</span>{rec.reason}
                           </p>
                        </div>
-                       <Button size="sm" onClick={() => handleAddRecommendation(rec)} className="shrink-0">
+                       <Button size="sm" onClick={() => handleAddRecommendation(rec)} className="shrink-0 mt-3 md:mt-0">
                           <Plus size={16} className="mr-1" /> 加入书库
                        </Button>
                     </div>
