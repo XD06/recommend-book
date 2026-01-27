@@ -371,8 +371,8 @@ const App: React.FC = () => {
   const currentMeta = currentMetaKey ? categoryMeta[currentMetaKey] : null;
 
   return (
-    <div className="min-h-screen bg-stone-50 font-sans flex">
-      {/* Sidebar Navigation */}
+    <div className="min-h-screen bg-stone-50 font-sans flex flex-col md:flex-row">
+      {/* Sidebar Navigation (Now handles responsive logic internally) */}
       <Sidebar 
         activeTab={activeTab} 
         onTabChange={(tab) => { setActiveTab(tab); setShowIngestion(false); }}
@@ -380,18 +380,19 @@ const App: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 ml-20 md:ml-64 transition-all duration-300">
-        <div className="max-w-7xl mx-auto px-6 py-8">
+      {/* UPDATE: Adjusted margins for mobile bottom nav and desktop sidebar */}
+      <div className="flex-1 transition-all duration-300 md:ml-64 mb-20 md:mb-0">
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-6 md:py-8">
           
           {/* Header Area (Dynamic) */}
-          <header className="mb-8 flex justify-between items-end">
+          <header className="mb-6 md:mb-8 flex flex-col md:flex-row md:justify-between md:items-end gap-4">
             <div>
-              <h1 className="text-3xl font-serif font-bold text-slate-900">
+              <h1 className="text-2xl md:text-3xl font-serif font-bold text-slate-900">
                 {showIngestion ? '导入书籍' : 
                  activeTab === 'library' ? '我的私人图书馆' : 
                  activeTab === 'stats' ? '阅读数据中心' : '数据管理'}
               </h1>
-              <p className="text-slate-500 mt-1">
+              <p className="text-sm md:text-base text-slate-500 mt-1">
                 {showIngestion ? '批量粘贴书单，AI 自动整理' :
                  activeTab === 'library' ? `共藏书 ${stats.total} 本，正在阅读 ${stats.reading} 本` :
                  activeTab === 'stats' ? '全方位分析您的阅读习惯' : '备份与迁移您的个人数据'}
@@ -399,7 +400,7 @@ const App: React.FC = () => {
             </div>
             
             {activeTab === 'library' && !showIngestion && (
-              <div className="flex bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
+              <div className="flex self-start md:self-auto bg-white p-1 rounded-lg border border-slate-200 shadow-sm">
                  <button onClick={() => setViewMode('grid')} className={`p-2 rounded-md ${viewMode === 'grid' ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400'}`}><LayoutGrid size={18} /></button>
                  <button onClick={() => setViewMode('table')} className={`p-2 rounded-md ${viewMode === 'table' ? 'bg-indigo-50 text-indigo-600' : 'text-slate-400'}`}><Table2 size={18} /></button>
               </div>
@@ -426,7 +427,7 @@ const App: React.FC = () => {
              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 
                 {/* 1. Key Metrics Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                   <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-start justify-between">
                     <div>
                       <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">正在阅读</p>
@@ -599,7 +600,7 @@ const App: React.FC = () => {
                <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm sticky top-4 z-20 space-y-4">
                   {/* Level 1: Categories */}
                   <div className="flex flex-wrap gap-4 items-center">
-                    <div className="flex items-center gap-2 overflow-x-auto no-scrollbar max-w-full">
+                    <div className="flex items-center gap-2 overflow-x-auto no-scrollbar max-w-full pb-1">
                        <button 
                          onClick={() => { setSelectedCategory(null); setSelectedSubcategory(null); setStatusFilter('All'); }}
                          className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${!selectedCategory && statusFilter === 'All' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
@@ -619,12 +620,12 @@ const App: React.FC = () => {
                     
                     <div className="w-px h-6 bg-slate-200 mx-2 hidden md:block"></div>
                     
-                    <div className="flex gap-1 ml-auto">
+                    <div className="flex gap-1 ml-auto shrink-0">
                       {(['All', BookLevel.BASIC, BookLevel.ADVANCED, BookLevel.EXPERT] as const).map(lvl => (
                         <button 
                           key={lvl}
                           onClick={() => setSelectedLevel(lvl)}
-                          className={`text-xs px-2 py-1 rounded ${selectedLevel === lvl ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}
+                          className={`text-xs px-2 py-1 rounded whitespace-nowrap ${selectedLevel === lvl ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-100'}`}
                         >
                           {lvl === 'All' ? '全难度' : lvl}
                         </button>
@@ -653,13 +654,13 @@ const App: React.FC = () => {
                          </button>
                       ))}
 
-                      <div className="flex-1"></div>
+                      <div className="flex-1 min-w-[10px]"></div>
                       
                       {/* Refine Subcategories Button */}
                       <button 
                          onClick={handleRefineSubcategories}
                          disabled={isRefiningSubcats}
-                         className="flex items-center px-2 py-1 text-xs font-medium text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors ml-2"
+                         className="flex items-center px-2 py-1 text-xs font-medium text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors ml-auto md:ml-2"
                          title="AI 智能重组当前子分类"
                       >
                          {isRefiningSubcats ? (
@@ -685,7 +686,7 @@ const App: React.FC = () => {
                {/* Path Info Banner - Shows for both Category and Subcategory views if path exists */}
                {currentMeta && currentMeta.pathReasoning && (
                   <div className="bg-gradient-to-r from-indigo-50 to-white border border-indigo-100 p-5 rounded-xl shadow-sm animate-in fade-in">
-                    <div className="flex justify-between items-start">
+                    <div className="flex flex-col md:flex-row justify-between items-start gap-4">
                       <div>
                         <h4 className="flex items-center text-indigo-900 font-bold text-sm mb-2">
                           <Map size={16} className="mr-2 text-indigo-600" /> 
@@ -693,7 +694,7 @@ const App: React.FC = () => {
                         </h4>
                         <p className="text-indigo-800/80 text-sm leading-relaxed max-w-3xl">{currentMeta.pathReasoning}</p>
                       </div>
-                      <Button size="sm" variant="secondary" onClick={handleGeneratePath} isLoading={isGeneratingPath}>
+                      <Button size="sm" variant="secondary" onClick={handleGeneratePath} isLoading={isGeneratingPath} className="shrink-0 self-end md:self-start">
                         重新生成
                       </Button>
                     </div>
@@ -709,16 +710,16 @@ const App: React.FC = () => {
                     isReorganizing={isReorganizing}
                  />
                ) : (
-                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-x-6 gap-y-10 pb-20 px-2">
+                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-x-6 md:gap-y-10 pb-20 px-1 md:px-2">
                     {filteredBooks.map((book, idx) => (
                       <div key={book.id} className="relative group">
                          {/* Rank Badge: Shows if book is in the CURRENT active path */}
                          {currentMeta?.path && (
-                           <div className="absolute -top-4 -left-2 z-10 w-8 h-8 bg-slate-900 text-white rounded-full flex items-center justify-center font-bold text-sm border-2 border-stone-50 shadow-md">
+                           <div className="absolute -top-2 -left-2 md:-top-4 md:-left-2 z-10 w-6 h-6 md:w-8 md:h-8 bg-slate-900 text-white rounded-full flex items-center justify-center font-bold text-xs md:text-sm border-2 border-stone-50 shadow-md">
                              {(currentMeta.path.indexOf(book.id) !== -1) ? currentMeta.path.indexOf(book.id) + 1 : '-'}
                            </div>
                          )}
-                         <BookCard book={book} onClick={() => setSelectedBook(book)} />
+                         <BookCard book={book} onClick={() => setSelectedBook(book)} compact={window.innerWidth < 768} />
                       </div>
                     ))}
                     {filteredBooks.length === 0 && (
@@ -732,10 +733,10 @@ const App: React.FC = () => {
 
                {/* Context Actions - Floating Button for Path Generation */}
                {selectedCategory && !currentMeta?.path && filteredBooks.length > 1 && viewMode === 'grid' && !currentMeta?.pathReasoning && (
-                 <div className="fixed bottom-8 right-8 animate-in slide-in-from-bottom-4 z-30">
+                 <div className="fixed bottom-24 right-4 md:bottom-8 md:right-8 animate-in slide-in-from-bottom-4 z-30">
                    <Button onClick={handleGeneratePath} isLoading={isGeneratingPath} className="shadow-xl shadow-indigo-900/20">
                      <Sparkles size={16} className="mr-2" /> 
-                     为{selectedSubcategory ? `当前子主题` : `当前领域`}生成学习路径
+                     为{selectedSubcategory ? `当前子主题` : `当前领域`}生成路径
                    </Button>
                  </div>
                )}

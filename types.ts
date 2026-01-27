@@ -61,3 +61,16 @@ export interface Recommendation {
   reason: string;
   level: BookLevel;
 }
+
+export interface DebugLogItem {
+  id: string;
+  timestamp: string;
+  action: string;
+  request: {
+    system?: string;
+    user?: string;
+  };
+  response?: any;
+  rawResponse?: string;
+  error?: string;
+}

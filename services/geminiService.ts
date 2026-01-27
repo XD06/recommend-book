@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation } from "../types";
+import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation, DebugLogItem } from "../types";
 import { v4 as uuidv4 } from 'uuid';
 
 // ============================================================================
@@ -16,43 +16,77 @@ const openai = new OpenAI({
 });
 
 // ============================================================================
+// 🛠️ Debug Logging System
+// ============================================================================
+
+let debugLogs: DebugLogItem[] = [];
+
+export const getDebugLogs = () => [...debugLogs]; // Return copy
+export const clearDebugLogs = () => { debugLogs = []; };
+
+const addLog = (action: string, request: { system?: string, user?: string }, response: any, rawResponse: string | null, error?: any) => {
+  const log: DebugLogItem = {
+    id: uuidv4(),
+    timestamp: new Date().toLocaleTimeString(),
+    action,
+    request,
+    response,
+    rawResponse: rawResponse || undefined,
+    error: error ? (error instanceof Error ? error.message : String(error)) : undefined
+  };
+  
+  // Store latest 50 logs
+  debugLogs.unshift(log);
+  if (debugLogs.length > 50) debugLogs.pop();
+  
+  console.log(`[AI Debug] ${action}`, log);
+};
+
+// ============================================================================
 
 // Helper to chunk array for batch processing
-export const chunkArray = <T,>(array: T[], size: number): T[][] => {
-  const result = [];
+export const chunkArray = <T>(array: T[], size: number): T[][] => {
+  const result: T[][] = [];
   for (let i = 0; i < array.length; i += size) {
     result.push(array.slice(i, i + size));
   }
   return result;
 };
 
-// 增强版 JSON 解析辅助函数，能从 AI 的废话中提取 JSON
+/**
+ * 核心 JSON 解析器 - 专为处理 AI 不稳定的输出设计
+ * 能够剥离 Markdown 代码块、去除无关对话文本，精准提取 JSON
+ */
 const parseDeepSeekJSON = (content: string | null) => {
   if (!content) return null;
   
-  // 1. 尝试使用正则提取第一个 JSON 对象 {...}
-  // 匹配非贪婪的最外层大括号
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      console.warn("Regex extraction failed, trying cleanup...", e);
-    }
+  let clean = content.trim();
+
+  // 1. 优先尝试提取 Markdown 代码块 (```json ... ```)
+  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
+  const match = clean.match(codeBlockRegex);
+  if (match && match[1]) {
+    clean = match[1].trim();
   }
 
-  // 2. 降级方案：清理 Markdown 标记
-  let cleanContent = content.trim();
-  if (cleanContent.startsWith('```')) {
-    cleanContent = cleanContent.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
-  }
+  // 2. 无论是否在代码块中，都寻找最外层的 {}
+  // 即使 AI 说 "Okay, here is the json: { ... } Hope you like it", 我们也只取 { ... }
+  const firstBrace = clean.indexOf('{');
+  const lastBrace = clean.lastIndexOf('}');
   
+  if (firstBrace !== -1 && lastBrace !== -1) {
+    clean = clean.substring(firstBrace, lastBrace + 1);
+  } else {
+    console.error("AI Response does not contain valid JSON structure:", content);
+    throw new Error("AI 返回内容不包含有效的 JSON 数据格式");
+  }
+
   try {
-    return JSON.parse(cleanContent);
+    return JSON.parse(clean);
   } catch (e) {
-    console.error("JSON Parse Error:", e, "Raw Content:", content);
-    throw new Error("AI 返回格式错误，无法解析为 JSON");
+    console.error("JSON Parse Error:", e);
+    console.error("Cleaned Content was:", clean);
+    throw new Error("AI 返回的 JSON 格式有语法错误，无法解析");
   }
 };
 
@@ -77,17 +111,23 @@ ${categoriesContext}
   ]
 }`;
 
+  const userPrompt = bookTitles.join('\n');
+
   try {
     const completion = await openai.chat.completions.create({
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: bookTitles.join('\n') }
+        { role: "user", content: userPrompt }
       ],
       model: "deepseek-chat",
       response_format: { type: "json_object" }
     });
 
-    const data = parseDeepSeekJSON(completion.choices[0].message.content);
+    const raw = completion.choices[0].message.content;
+    const data = parseDeepSeekJSON(raw);
+    
+    addLog('analyzeBookBatch', { system: systemPrompt, user: userPrompt }, data, raw);
+
     if (!data || !data.books) return [];
 
     return data.books.map((b: any) => ({
@@ -101,6 +141,7 @@ ${categoriesContext}
     }));
   } catch (error) {
     console.error("Batch analysis failed", error);
+    addLog('analyzeBookBatch', { system: systemPrompt, user: userPrompt }, null, null, error);
     throw error;
   }
 };
@@ -109,7 +150,7 @@ export const generateBookInsight = async (title: string, author: string, level: 
   const systemPrompt = `你是一个深度阅读助手。请以 JSON 格式输出结果。
 输出结构：
 {
-  "summary": "几百字的中文简介",
+  "summary": "几百字的中文简介，重点概括书的核心思想",
   "advice": "针对 ${level} 难度的具体阅读策略和建议",
   "keyChapters": ["核心章节1", "核心章节2", "核心章节3"]
 }`;
@@ -126,10 +167,15 @@ export const generateBookInsight = async (title: string, author: string, level: 
       response_format: { type: "json_object" }
     });
 
-    const data = parseDeepSeekJSON(completion.choices[0].message.content);
+    const raw = completion.choices[0].message.content;
+    const data = parseDeepSeekJSON(raw);
+    
+    addLog('generateBookInsight', { system: systemPrompt, user: userPrompt }, data, raw);
+    
     return data as AIInsight;
   } catch (error) {
     console.error("Insight generation failed", error);
+    addLog('generateBookInsight', { system: systemPrompt, user: userPrompt }, null, null, error);
     throw error;
   }
 };
@@ -145,11 +191,13 @@ export const generateReadingPath = async (
     title: b.title, 
     author: b.author, 
     subcategory: b.subcategory, 
-    level: b.level 
+    level: b.level,
+    status: b.status,
+    contentHint: b.aiInsight?.summary ? b.aiInsight.summary.slice(0, 100) + '...' : undefined
   }));
   
   const reqPrompt = customRequirements 
-    ? `用户有个性化阅读目标："${customRequirements}"。请务必根据此目标调整阅读顺序（例如：如果用户想先看实战，就优先排实战类的书）。` 
+    ? `用户有个性化阅读目标："${customRequirements}"。请务必根据此目标调整阅读顺序。` 
     : "请根据从基础到高阶的学习曲线进行规划。";
 
   const contextStr = subcategoryName 
@@ -157,19 +205,23 @@ export const generateReadingPath = async (
     : `领域：${categoryName}`;
 
   const systemPrompt = `你是一个高级课程设计师。请以 JSON 格式规划阅读路径。
-**重要**：输出必须是合法的 JSON 对象。
+  
+**排序逻辑参考**：
+1. **难度递进**：通常从 Basic -> Advanced -> Expert。
+2. **内容依赖**：参考书籍的 contentHint（内容摘要），如果一本书是另一本书的基础理论，应排在前面。
+3. **阅读状态**：status='finished' 的书如果作为后续书籍的基础，应排在前面；但如果用户是想读新书，主要路径应集中在 'unread' 书籍上。
 
 输出结构：
 {
   "sortedBookIds": ["id1", "id2", ...],
-  "reasoning": "详细的规划理由，解释为什么这样排序。如果用户有特殊要求，请在理由中说明是如何满足的。"
+  "reasoning": "详细的规划理由，解释为什么这样排序（例如：'先读《X》因为它建立了基本概念...'）。"
 }`;
 
   const userPrompt = `请为以下书籍规划最佳阅读顺序。
 上下文：${contextStr}
 ${reqPrompt}
 
-书籍列表：
+书籍列表数据：
 ${JSON.stringify(simplifiedBooks)}`;
 
   try {
@@ -182,18 +234,24 @@ ${JSON.stringify(simplifiedBooks)}`;
       response_format: { type: "json_object" }
     });
 
-    const data = parseDeepSeekJSON(completion.choices[0].message.content);
+    const raw = completion.choices[0].message.content;
+    const data = parseDeepSeekJSON(raw);
+    
+    addLog('generateReadingPath', { system: systemPrompt, user: userPrompt }, data, raw);
+
     return data as ReadingPathResponse;
   } catch (error) {
     console.error("Reading path generation failed", error);
+    addLog('generateReadingPath', { system: systemPrompt, user: userPrompt }, null, null, error);
     throw error;
   }
 };
 
 export const recommendBooks = async (currentBooks: Book[], categoryName: string, customRequirements?: string): Promise<Recommendation[]> => {
-  const simplifiedBooks = currentBooks.map(b => ({ title: b.title, author: b.author }));
+  const simplifiedBooks = currentBooks.map(b => ({ title: b.title, author: b.author, category: b.category }));
+  
   const existingContext = currentBooks.length > 0 
-    ? `用户当前已拥有以下 "${categoryName}" 类书籍：\n${JSON.stringify(simplifiedBooks)}`
+    ? `用户当前已拥有以下 "${categoryName}" 类书籍（请勿重复推荐）：\n${JSON.stringify(simplifiedBooks)}`
     : `用户对 "${categoryName}" 感兴趣。`;
 
   const requirementPrompt = customRequirements 
@@ -232,21 +290,36 @@ export const recommendBooks = async (currentBooks: Book[], categoryName: string,
       response_format: { type: "json_object" }
     });
 
-    const data = parseDeepSeekJSON(completion.choices[0].message.content);
+    const raw = completion.choices[0].message.content;
+    const data = parseDeepSeekJSON(raw);
+    
+    addLog('recommendBooks', { system: systemPrompt, user: userPrompt }, data, raw);
+
     return data.recommendations;
   } catch (error) {
     console.error("Recommendation failed", error);
+    addLog('recommendBooks', { system: systemPrompt, user: userPrompt }, null, null, error);
     throw error;
   }
 };
 
 export const reorganizeLibrary = async (books: Book[]): Promise<Record<string, { category: string, subcategory: string }>> => {
-  // Minimize payload to avoid token limits
-  const payload = books.map(b => ({ id: b.id, title: b.title }));
+  const payload = books.map(b => ({ 
+    id: b.id, 
+    title: b.title, 
+    author: b.author, 
+    currentCategory: b.category,
+    currentSubcategory: b.subcategory,
+    contentHint: b.aiInsight?.summary ? b.aiInsight.summary.slice(0, 100) : undefined
+  }));
   
   const systemPrompt = `你是一个图书馆分类专家。
 请对书籍进行重新归类，建立清晰的二级分类体系（Category -> Subcategory）。
-合并语义重复的分类。
+
+**数据参考**：
+请综合参考书名、作者、当前分类以及 contentHint（内容摘要片段）来进行判断。
+合并语义重复的分类（如 "History" 和 "Historical" 应合并）。
+
 返回 JSON 格式：
 {
   "mapping": [
@@ -254,18 +327,23 @@ export const reorganizeLibrary = async (books: Book[]): Promise<Record<string, {
   ]
 }`;
 
+  const userPrompt = JSON.stringify(payload);
+
   try {
     const completion = await openai.chat.completions.create({
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: JSON.stringify(payload) }
+        { role: "user", content: userPrompt }
       ],
       model: "deepseek-chat",
       response_format: { type: "json_object" }
     });
 
-    const data = parseDeepSeekJSON(completion.choices[0].message.content);
+    const raw = completion.choices[0].message.content;
+    const data = parseDeepSeekJSON(raw);
     
+    addLog('reorganizeLibrary', { system: systemPrompt, user: userPrompt }, data, raw);
+
     const result: Record<string, { category: string, subcategory: string }> = {};
     if (data.mapping && Array.isArray(data.mapping)) {
       data.mapping.forEach((item: any) => {
@@ -278,12 +356,19 @@ export const reorganizeLibrary = async (books: Book[]): Promise<Record<string, {
     return result;
   } catch (error) {
     console.error("Reorganization failed", error);
+    addLog('reorganizeLibrary', { system: systemPrompt, user: userPrompt }, null, null, error);
     throw error;
   }
 };
 
 export const refineSubcategories = async (books: Book[], category: string, userInstruction: string): Promise<Record<string, string>> => {
-  const payload = books.map(b => ({ id: b.id, title: b.title, currentSubcategory: b.subcategory }));
+  const payload = books.map(b => ({ 
+    id: b.id, 
+    title: b.title, 
+    author: b.author,
+    currentSubcategory: b.subcategory,
+    contentHint: b.aiInsight?.summary ? b.aiInsight.summary.slice(0, 100) : undefined
+  }));
   
   const systemPrompt = `你是一个细心的图书整理员。
 用户觉得当前 "${category}" 领域下的子分类（Subcategories）不够好。
@@ -300,18 +385,23 @@ export const refineSubcategories = async (books: Book[], category: string, userI
   ]
 }`;
 
+  const userPrompt = JSON.stringify(payload);
+
   try {
     const completion = await openai.chat.completions.create({
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: JSON.stringify(payload) }
+        { role: "user", content: userPrompt }
       ],
       model: "deepseek-chat",
       response_format: { type: "json_object" }
     });
 
-    const data = parseDeepSeekJSON(completion.choices[0].message.content);
+    const raw = completion.choices[0].message.content;
+    const data = parseDeepSeekJSON(raw);
     
+    addLog('refineSubcategories', { system: systemPrompt, user: userPrompt }, data, raw);
+
     const result: Record<string, string> = {};
     if (data.mapping && Array.isArray(data.mapping)) {
       data.mapping.forEach((item: any) => {
@@ -321,6 +411,7 @@ export const refineSubcategories = async (books: Book[], category: string, userI
     return result;
   } catch (error) {
     console.error("Refining subcategories failed", error);
+    addLog('refineSubcategories', { system: systemPrompt, user: userPrompt }, null, null, error);
     throw error;
   }
 };

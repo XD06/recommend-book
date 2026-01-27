@@ -1,6 +1,8 @@
-import React, { useRef } from 'react';
-import { Download, Upload, Database, FileJson, AlertTriangle, CheckCircle2, ShieldCheck } from 'lucide-react';
+import React, { useRef, useState, useEffect } from 'react';
+import { Download, Upload, Database, FileJson, AlertTriangle, CheckCircle2, ShieldCheck, Terminal, Bug, RefreshCw, X, ChevronDown, ChevronRight, Copy } from 'lucide-react';
 import { Button } from './Button';
+import { getDebugLogs, clearDebugLogs } from '../services/geminiService';
+import { DebugLogItem } from '../types';
 
 interface DataManagementProps {
   onExport: () => void;
@@ -14,6 +16,21 @@ interface DataManagementProps {
 
 export const DataManagement: React.FC<DataManagementProps> = ({ onExport, onImport, stats }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [logs, setLogs] = useState<DebugLogItem[]>([]);
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+
+  useEffect(() => {
+    refreshLogs();
+  }, []);
+
+  const refreshLogs = () => {
+    setLogs(getDebugLogs());
+  };
+
+  const handleClearLogs = () => {
+    clearDebugLogs();
+    refreshLogs();
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.[0]) {
@@ -22,8 +39,13 @@ export const DataManagement: React.FC<DataManagementProps> = ({ onExport, onImpo
     }
   };
 
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    alert("已复制到剪贴板");
+  };
+
   return (
-    <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+    <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
       
       {/* Overview Card */}
       <div className="bg-gradient-to-br from-indigo-900 to-slate-900 rounded-2xl p-8 text-white shadow-xl relative overflow-hidden">
@@ -126,8 +148,132 @@ export const DataManagement: React.FC<DataManagementProps> = ({ onExport, onImpo
             <Upload size={18} />
           </Button>
         </div>
-
       </div>
+
+      {/* ================= AI Debug Console ================= */}
+      <div className="bg-slate-900 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl">
+        <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Terminal size={20} className="text-green-500" />
+            <h3 className="font-mono font-bold text-slate-200">AI Debug Console</h3>
+            <span className="text-xs px-2 py-0.5 bg-slate-800 text-slate-400 rounded-full border border-slate-700">
+              {logs.length} events
+            </span>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={refreshLogs} className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors" title="Refresh">
+              <RefreshCw size={16} />
+            </button>
+            <button onClick={handleClearLogs} className="p-1.5 hover:bg-red-900/30 rounded text-slate-400 hover:text-red-400 transition-colors" title="Clear">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        <div className="max-h-[500px] overflow-y-auto p-0 font-mono text-sm custom-scrollbar bg-slate-900">
+          {logs.length === 0 ? (
+            <div className="p-12 text-center text-slate-600">
+              <Bug size={32} className="mx-auto mb-3 opacity-20" />
+              <p>No AI interactions recorded yet.</p>
+              <p className="text-xs mt-1">Perform some AI actions to see logs here.</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-800">
+              {logs.map((log) => {
+                const isExpanded = expandedLogId === log.id;
+                const isError = !!log.error;
+                
+                return (
+                  <div key={log.id} className={`group ${isError ? 'bg-red-900/10' : ''}`}>
+                    {/* Header Row */}
+                    <div 
+                      onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
+                      className="flex items-center gap-3 p-3 cursor-pointer hover:bg-slate-800/50 transition-colors"
+                    >
+                      <div className="text-slate-500 shrink-0">
+                        {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </div>
+                      <div className="text-slate-500 text-xs shrink-0 w-20">{log.timestamp}</div>
+                      <div className={`font-bold shrink-0 w-40 truncate ${isError ? 'text-red-400' : 'text-blue-400'}`}>
+                        {log.action}
+                      </div>
+                      <div className="text-slate-400 text-xs truncate flex-1 opacity-60">
+                         {log.request.user ? log.request.user.slice(0, 60) + '...' : 'No prompt content'}
+                      </div>
+                      {isError && (
+                         <span className="text-xs px-2 py-0.5 bg-red-900/50 text-red-200 rounded border border-red-800">ERROR</span>
+                      )}
+                    </div>
+
+                    {/* Expanded Detail */}
+                    {isExpanded && (
+                      <div className="p-4 bg-slate-950 border-t border-slate-800 text-xs space-y-4">
+                        
+                        {/* Error Section */}
+                        {log.error && (
+                          <div className="bg-red-950/30 border border-red-900/50 p-3 rounded text-red-300">
+                            <strong className="block mb-1 text-red-400">Error Message:</strong>
+                            {log.error}
+                          </div>
+                        )}
+
+                        {/* Request */}
+                        <div className="space-y-2">
+                           <div className="flex justify-between text-slate-500 uppercase tracking-wider font-bold">
+                             <span>Request Payload</span>
+                             <button onClick={() => copyToClipboard(JSON.stringify(log.request, null, 2))} className="hover:text-white"><Copy size={12}/></button>
+                           </div>
+                           <div className="grid grid-cols-1 gap-2">
+                             {log.request.system && (
+                               <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                                  <span className="text-green-500 block mb-1"># System Prompt</span>
+                                  <div className="text-slate-300 whitespace-pre-wrap">{log.request.system}</div>
+                               </div>
+                             )}
+                             {log.request.user && (
+                               <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                                  <span className="text-blue-500 block mb-1"># User Prompt</span>
+                                  <div className="text-slate-300 whitespace-pre-wrap">{log.request.user}</div>
+                               </div>
+                             )}
+                           </div>
+                        </div>
+
+                        {/* Response */}
+                        <div className="space-y-2">
+                           <div className="flex justify-between text-slate-500 uppercase tracking-wider font-bold">
+                             <span>AI Response</span>
+                             <button onClick={() => copyToClipboard(log.rawResponse || '')} className="hover:text-white"><Copy size={12}/></button>
+                           </div>
+                           
+                           {/* Raw */}
+                           {log.rawResponse && (
+                             <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                                <span className="text-purple-500 block mb-1"># Raw Output</span>
+                                <div className="text-slate-400 whitespace-pre-wrap font-mono break-all">{log.rawResponse}</div>
+                             </div>
+                           )}
+                           
+                           {/* Parsed JSON */}
+                           {log.response && (
+                             <div className="bg-slate-900 p-3 rounded border border-slate-800">
+                                <span className="text-yellow-500 block mb-1"># Parsed JSON Object</span>
+                                <pre className="text-slate-300 overflow-x-auto custom-scrollbar">
+                                  {JSON.stringify(log.response, null, 2)}
+                                </pre>
+                             </div>
+                           )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
     </div>
   );
 };

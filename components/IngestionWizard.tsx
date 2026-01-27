@@ -29,7 +29,7 @@ export const IngestionWizard: React.FC<IngestionWizardProps> = ({ onComplete, ex
     setTotalBooks(titles.length);
     setProgress(0);
 
-    const batches = chunkArray(titles, 10); // Process 10 books at a time
+    const batches = chunkArray<string>(titles, 10); // Process 10 books at a time
     let allBooks: Book[] = [];
     let processedCount = 0;
 
