@@ -28,8 +28,9 @@ export interface Book {
   id: string;
   title: string;
   author: string;
-  publisher?: string; // 新增出版社字段
-  category: string;
+  publisher?: string;
+  category: string;     // 一级分类 (Domain/Area)
+  subcategory: string;  // 二级分类 (Topic/Specific)
   level: BookLevel;
   status: BookStatus;
   userData?: UserProgress;
@@ -56,7 +57,7 @@ export interface CategoryMeta {
 export interface Recommendation {
   title: string;
   author: string;
-  publisher: string; // 新增：推荐的具体版本/出版社/译者
+  publisher: string;
   reason: string;
   level: BookLevel;
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Book, BookStatus, BookLevel } from '../types';
-import { Trash2, Edit2, CheckCircle2, Circle, Wand2, Signal, SignalMedium, SignalHigh } from 'lucide-react';
+import { Trash2, Edit2, CheckCircle2, Circle, Wand2, Signal, SignalMedium, SignalHigh, Tag } from 'lucide-react';
 import { Button } from './Button';
 
 interface LibraryTableProps {
@@ -39,7 +39,7 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
     <div className="space-y-4">
       <div className="flex justify-end bg-indigo-50/50 p-4 rounded-xl border border-indigo-100 items-center">
          <div className="mr-auto text-sm text-indigo-800">
-           <span className="font-bold">💡 智能整理：</span> 觉得分类太乱？让 AI 帮您重新规划，自动合并相似领域。
+           <span className="font-bold">💡 智能整理：</span> 觉得分类太乱？让 AI 帮您重新规划，自动合并相似领域并细分子主题。
          </div>
          <Button 
            size="sm" 
@@ -58,7 +58,7 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
             <thead className="bg-slate-50 text-slate-500 font-medium border-b border-slate-200">
               <tr>
                 <th className="px-6 py-4">书名 / 作者</th>
-                <th className="px-6 py-4">分类</th>
+                <th className="px-6 py-4">分类体系</th>
                 <th className="px-6 py-4">难度评级</th>
                 <th className="px-6 py-4">状态</th>
                 <th className="px-6 py-4 text-right">操作</th>
@@ -79,9 +79,16 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
                       <div className="text-slate-500 text-xs mt-0.5">{book.author}</div>
                     </td>
                     <td className="px-6 py-4 text-slate-600">
-                      <span className="inline-block px-2.5 py-1 bg-slate-100 rounded-md text-xs font-medium border border-slate-200">
-                        {book.category}
-                      </span>
+                      <div className="flex flex-col items-start gap-1">
+                        <span className="inline-block px-2.5 py-1 bg-slate-100 rounded-md text-xs font-bold border border-slate-200">
+                          {book.category}
+                        </span>
+                        {book.subcategory && (
+                          <span className="inline-flex items-center text-[10px] text-slate-500 ml-1">
+                             <Tag size={10} className="mr-1 opacity-60" /> {book.subcategory}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium ${levelConfig[book.level].style}`}>

@@ -26,36 +26,54 @@ export const chunkArray = <T,>(array: T[], size: number): T[][] => {
   return result;
 };
 
-// 通用 JSON 解析辅助函数，防止 DeepSeek 返回 Markdown 代码块格式
+// 增强版 JSON 解析辅助函数，能从 AI 的废话中提取 JSON
 const parseDeepSeekJSON = (content: string | null) => {
   if (!content) return null;
-  let cleanContent = content.trim();
-  // 去除 markdown code block 标记 (```json ... ```)
-  if (cleanContent.startsWith('```')) {
-    cleanContent = cleanContent.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+  
+  // 1. 尝试使用正则提取第一个 JSON 对象 {...}
+  // 匹配非贪婪的最外层大括号
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      console.warn("Regex extraction failed, trying cleanup...", e);
+    }
   }
+
+  // 2. 降级方案：清理 Markdown 标记
+  let cleanContent = content.trim();
+  if (cleanContent.startsWith('```')) {
+    cleanContent = cleanContent.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/\s*```$/, '');
+  }
+  
   try {
     return JSON.parse(cleanContent);
   } catch (e) {
-    console.error("JSON Parse Error:", e, "Content:", content);
-    return null;
+    console.error("JSON Parse Error:", e, "Raw Content:", content);
+    throw new Error("AI 返回格式错误，无法解析为 JSON");
   }
 };
 
 export const analyzeBookBatch = async (bookTitles: string[], existingCategories: string[] = []): Promise<Partial<Book>[]> => {
   const categoriesContext = existingCategories.length > 0 
-    ? `当前图书馆已有分类：${existingCategories.join(', ')}。如果书籍适合，请优先使用现有分类以保持一致性；如果完全不相关，请创建新的精准分类。` 
+    ? `当前图书馆已有的一级分类（Domain）：${existingCategories.join(', ')}。请尽量复用现有的一级分类。` 
     : '';
 
   const systemPrompt = `你是一个专业的图书管理员。请分析用户提供的书单。
 ${categoriesContext}
-请为每一本书识别作者(英文名作者需要翻译成中文，英文名也要保留)、分类（例如: 历史, 计算机, 心理学, 商业, 小说 等）和难度等级（Basic, Advanced, Expert）。
+请为每一本书识别作者(英文名作者需要翻译成中文，英文名也要保留)、一级分类(Domain)、二级分类(Subcategory)和难度等级。
+
+**分类原则**：
+1. **category (一级分类)**: 宏观领域，如“计算机科学”、“历史”、“商业”、“心理学”、“文学”。
+2. **subcategory (二级分类)**: 具体主题，如“计算机科学”下的“人工智能”、“Web开发”、“网络安全”；或“历史”下的“中国古代史”、“二战史”。
 
 **输出格式要求**：
-请直接返回一个纯 JSON 对象，格式如下：
+请直接返回一个纯 JSON 对象，不要包含任何 Markdown 格式或额外文字：
 {
   "books": [
-    { "title": "书名", "author": "作者", "category": "分类", "level": "Basic/Advanced/Expert" }
+    { "title": "书名", "author": "作者", "category": "一级分类", "subcategory": "二级分类", "level": "Basic/Advanced/Expert" }
   ]
 }`;
 
@@ -77,6 +95,7 @@ ${categoriesContext}
       title: b.title,
       author: b.author,
       category: b.category,
+      subcategory: b.subcategory || 'General', // Fallback
       level: b.level as BookLevel,
       status: 'unread'
     }));
@@ -90,7 +109,7 @@ export const generateBookInsight = async (title: string, author: string, level: 
   const systemPrompt = `你是一个深度阅读助手。请以 JSON 格式输出结果。
 输出结构：
 {
-  "summary": "200字以内的中文简介",
+  "summary": "几百字的中文简介",
   "advice": "针对 ${level} 难度的具体阅读策略和建议",
   "keyChapters": ["核心章节1", "核心章节2", "核心章节3"]
 }`;
@@ -115,18 +134,41 @@ export const generateBookInsight = async (title: string, author: string, level: 
   }
 };
 
-export const generateReadingPath = async (books: Book[], categoryName: string): Promise<ReadingPathResponse> => {
-  const simplifiedBooks = books.map(b => ({ id: b.id, title: b.title, author: b.author, level: b.level }));
+export const generateReadingPath = async (
+  books: Book[], 
+  categoryName: string, 
+  subcategoryName?: string, 
+  customRequirements?: string
+): Promise<ReadingPathResponse> => {
+  const simplifiedBooks = books.map(b => ({ 
+    id: b.id, 
+    title: b.title, 
+    author: b.author, 
+    subcategory: b.subcategory, 
+    level: b.level 
+  }));
   
+  const reqPrompt = customRequirements 
+    ? `用户有个性化阅读目标："${customRequirements}"。请务必根据此目标调整阅读顺序（例如：如果用户想先看实战，就优先排实战类的书）。` 
+    : "请根据从基础到高阶的学习曲线进行规划。";
+
+  const contextStr = subcategoryName 
+    ? `领域：${categoryName}，具体主题：${subcategoryName}` 
+    : `领域：${categoryName}`;
+
   const systemPrompt = `你是一个高级课程设计师。请以 JSON 格式规划阅读路径。
+**重要**：输出必须是合法的 JSON 对象。
+
 输出结构：
 {
   "sortedBookIds": ["id1", "id2", ...],
-  "reasoning": "规划理由和建议"
+  "reasoning": "详细的规划理由，解释为什么这样排序。如果用户有特殊要求，请在理由中说明是如何满足的。"
 }`;
 
-  const userPrompt = `用户有一组关于 "${categoryName}" 的书籍。
-请根据书籍的难度（Basic -> Expert）以及知识的前置依赖关系，为用户规划一个最佳的阅读顺序。
+  const userPrompt = `请为以下书籍规划最佳阅读顺序。
+上下文：${contextStr}
+${reqPrompt}
+
 书籍列表：
 ${JSON.stringify(simplifiedBooks)}`;
 
@@ -198,15 +240,63 @@ export const recommendBooks = async (currentBooks: Book[], categoryName: string,
   }
 };
 
-export const reorganizeLibrary = async (books: Book[]): Promise<Record<string, string>> => {
-  const payload = books.map(b => ({ id: b.id, title: b.title, category: b.category }));
+export const reorganizeLibrary = async (books: Book[]): Promise<Record<string, { category: string, subcategory: string }>> => {
+  // Minimize payload to avoid token limits
+  const payload = books.map(b => ({ id: b.id, title: b.title }));
   
   const systemPrompt = `你是一个图书馆分类专家。
-请对书籍进行重新归类，合并语义重复的分类（例如“历史”、“世界历史”合并）。
+请对书籍进行重新归类，建立清晰的二级分类体系（Category -> Subcategory）。
+合并语义重复的分类。
 返回 JSON 格式：
 {
   "mapping": [
-    { "bookId": "id", "newCategory": "新分类" }
+    { "bookId": "id", "newCategory": "一级分类", "newSubcategory": "二级分类" }
+  ]
+}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: JSON.stringify(payload) }
+      ],
+      model: "deepseek-chat",
+      response_format: { type: "json_object" }
+    });
+
+    const data = parseDeepSeekJSON(completion.choices[0].message.content);
+    
+    const result: Record<string, { category: string, subcategory: string }> = {};
+    if (data.mapping && Array.isArray(data.mapping)) {
+      data.mapping.forEach((item: any) => {
+        result[item.bookId] = {
+          category: item.newCategory,
+          subcategory: item.newSubcategory
+        };
+      });
+    }
+    return result;
+  } catch (error) {
+    console.error("Reorganization failed", error);
+    throw error;
+  }
+};
+
+export const refineSubcategories = async (books: Book[], category: string, userInstruction: string): Promise<Record<string, string>> => {
+  const payload = books.map(b => ({ id: b.id, title: b.title, currentSubcategory: b.subcategory }));
+  
+  const systemPrompt = `你是一个细心的图书整理员。
+用户觉得当前 "${category}" 领域下的子分类（Subcategories）不够好。
+请根据用户的**具体指令**，只修改这些书的 **Subcategory** 字段。
+**一级分类 Category 保持不变**。
+
+用户指令：${userInstruction}
+
+请尽量保持子分类数量适中（3-6个为宜），除非用户要求更细。
+返回 JSON 格式：
+{
+  "mapping": [
+    { "bookId": "id", "newSubcategory": "新的子分类名称" }
   ]
 }`;
 
@@ -225,12 +315,12 @@ export const reorganizeLibrary = async (books: Book[]): Promise<Record<string, s
     const result: Record<string, string> = {};
     if (data.mapping && Array.isArray(data.mapping)) {
       data.mapping.forEach((item: any) => {
-        result[item.bookId] = item.newCategory;
+        result[item.bookId] = item.newSubcategory;
       });
     }
     return result;
   } catch (error) {
-    console.error("Reorganization failed", error);
+    console.error("Refining subcategories failed", error);
     throw error;
   }
 };

@@ -88,9 +88,18 @@ export const BookCard: React.FC<BookCardProps> = ({ book, onClick, compact = fal
           
           {/* Top: Category Tag & Status */}
           <div className="flex justify-between items-start mb-6">
-            <span className="text-[9px] font-bold tracking-[0.2em] uppercase text-white/70 border-b border-white/20 pb-1">
-              {book.category}
-            </span>
+            <div className="flex flex-col items-start">
+               <span className="text-[9px] font-bold tracking-[0.2em] uppercase text-white/90">
+                 {book.category}
+               </span>
+               {book.subcategory && (
+                 <span className="text-[8px] font-medium tracking-wide uppercase text-white/60 mt-0.5">
+                   {book.subcategory}
+                 </span>
+               )}
+               <div className="w-8 h-[1px] bg-white/20 mt-1"></div>
+            </div>
+            
             <div className={`p-1.5 rounded-full backdrop-blur-md transition-all ${statusIndicator[book.status].bg} ${statusIndicator[book.status].color}`}>
                <StatusIcon size={14} strokeWidth={3} />
             </div>

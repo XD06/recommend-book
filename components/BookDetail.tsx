@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Book, BookStatus, AIInsight, BookLevel } from '../types';
-import { X, Play, BookOpen, BrainCircuit, Lightbulb, Target, CheckCircle2, Edit3, Save, RotateCcw, Building2 } from 'lucide-react';
+import { X, Play, BookOpen, BrainCircuit, Lightbulb, Target, CheckCircle2, Edit3, Save, RotateCcw, Building2, Tag } from 'lucide-react';
 import { Button } from './Button';
 import { generateBookInsight } from '../services/geminiService';
 
@@ -20,6 +20,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
   const [editAuthor, setEditAuthor] = useState(book.author);
   const [editPublisher, setEditPublisher] = useState(book.publisher || '');
   const [editCategory, setEditCategory] = useState(book.category);
+  const [editSubcategory, setEditSubcategory] = useState(book.subcategory || '');
   const [editLevel, setEditLevel] = useState<BookLevel>(book.level);
 
   // Progress State
@@ -40,6 +41,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
       author: editAuthor,
       publisher: editPublisher,
       category: editCategory,
+      subcategory: editSubcategory,
       level: editLevel
     };
     onUpdate(updatedBook);
@@ -51,6 +53,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
     setEditAuthor(book.author);
     setEditPublisher(book.publisher || '');
     setEditCategory(book.category);
+    setEditSubcategory(book.subcategory || '');
     setEditLevel(book.level);
     setIsEditing(false);
   };
@@ -161,7 +164,13 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
                         value={editCategory}
                         onChange={(e) => setEditCategory(e.target.value)}
                         className="flex-1 text-xs p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
-                        placeholder="分类"
+                        placeholder="一级分类"
+                     />
+                     <input 
+                        value={editSubcategory}
+                        onChange={(e) => setEditSubcategory(e.target.value)}
+                        className="flex-1 text-xs p-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                        placeholder="二级分类"
                      />
                      <select
                         value={editLevel}
@@ -188,6 +197,12 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 bg-slate-200 px-2 py-0.5 rounded">
                       {book.category}
                     </span>
+                    {book.subcategory && (
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded flex items-center">
+                        <Tag size={10} className="mr-1" />
+                        {book.subcategory}
+                      </span>
+                    )}
                     <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
                       book.level === 'Basic' ? 'bg-green-100 text-green-800' :
                       book.level === 'Advanced' ? 'bg-yellow-100 text-yellow-800' : 
