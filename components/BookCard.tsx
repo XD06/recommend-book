@@ -1,84 +1,156 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Book, BookStatus, BookLevel } from '../types';
-import { BookOpen, Check, Clock, TrendingUp } from 'lucide-react';
+import { Check, Clock, Bookmark, Building2, Signal, SignalHigh, SignalMedium, BarChart2 } from 'lucide-react';
 
 interface BookCardProps {
   book: Book;
   onClick: () => void;
+  compact?: boolean; // For dense views
 }
 
-export const BookCard: React.FC<BookCardProps> = ({ book, onClick }) => {
-  const statusColor = {
-    [BookStatus.UNREAD]: 'text-slate-400 bg-slate-100',
-    [BookStatus.READING]: 'text-blue-600 bg-blue-50',
-    [BookStatus.FINISHED]: 'text-emerald-600 bg-emerald-50',
+export const BookCard: React.FC<BookCardProps> = ({ book, onClick, compact = false }) => {
+  
+  // Define distinct styles for each level
+  const levelStyles = {
+    [BookLevel.BASIC]: {
+      gradient: 'from-emerald-600 to-teal-900', // Green/Teal
+      accent: 'bg-emerald-400',
+      textAccent: 'text-emerald-100',
+      label: 'BASIC',
+      subLabel: '入门读物',
+      bars: 1,
+      watermark: 'ENTRY'
+    },
+    [BookLevel.ADVANCED]: {
+      gradient: 'from-blue-700 to-indigo-950', // Blue/Indigo
+      accent: 'bg-blue-400',
+      textAccent: 'text-blue-100',
+      label: 'ADVANCED',
+      subLabel: '进阶研读',
+      bars: 2,
+      watermark: 'DEEP'
+    },
+    [BookLevel.EXPERT]: {
+      gradient: 'from-red-900 to-slate-950', // Dark Red/Black
+      accent: 'bg-rose-500',
+      textAccent: 'text-rose-100',
+      label: 'EXPERT',
+      subLabel: '专家典藏',
+      bars: 3,
+      watermark: 'MASTER'
+    }
   };
 
-  const levelBadge = {
-    [BookLevel.BASIC]: 'bg-green-100 text-green-700 border-green-200',
-    [BookLevel.ADVANCED]: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-    [BookLevel.EXPERT]: 'bg-red-100 text-red-800 border-red-200',
+  const style = levelStyles[book.level];
+
+  const statusIndicator = {
+    [BookStatus.UNREAD]: { icon: Bookmark, color: 'text-white/60', bg: 'bg-black/20' },
+    [BookStatus.READING]: { icon: Clock, color: 'text-white', bg: 'bg-blue-500/80 shadow-lg shadow-blue-900/50' },
+    [BookStatus.FINISHED]: { icon: Check, color: 'text-white', bg: 'bg-emerald-500/80 shadow-lg shadow-emerald-900/50' },
   };
 
-  const levelText = {
-    [BookLevel.BASIC]: '基础',
-    [BookLevel.ADVANCED]: '进阶',
-    [BookLevel.EXPERT]: '专家',
-  };
+  const StatusIcon = statusIndicator[book.status].icon;
+
+  // Render difficulty bars
+  const renderBars = () => (
+    <div className="flex gap-1">
+      {[1, 2, 3].map((i) => (
+        <div 
+          key={i} 
+          className={`h-1.5 w-4 rounded-full ${i <= style.bars ? style.accent : 'bg-white/10'}`} 
+        />
+      ))}
+    </div>
+  );
 
   return (
     <div 
       onClick={onClick}
-      className="group bg-white p-5 rounded-xl border border-slate-100 shadow-sm hover:shadow-xl hover:border-indigo-100 hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col h-full relative overflow-hidden"
+      className={`group relative cursor-pointer perspective-1000 transition-transform duration-300 hover:-translate-y-2 ${compact ? 'h-48' : 'h-[320px] w-full max-w-[220px] mx-auto'}`}
     >
-      <div className="absolute top-0 right-0 p-1">
-         <div className={`w-24 h-24 bg-gradient-to-bl from-slate-50 to-transparent rounded-bl-full opacity-50 pointer-events-none group-hover:scale-110 transition-transform`} />
-      </div>
+      {/* Book Spine Effect (Left Side) */}
+      <div className="absolute left-0 top-1 bottom-1 w-3 bg-gradient-to-r from-white/20 to-transparent z-20 rounded-l-sm blur-[0.5px] border-l border-white/10"></div>
+      
+      {/* Main Cover */}
+      <div className={`h-full w-full rounded-r-lg rounded-l-sm bg-gradient-to-br ${style.gradient} p-0 flex flex-col shadow-xl shadow-slate-300/50 group-hover:shadow-2xl group-hover:shadow-slate-400/50 border-r-2 border-b-2 border-black/20 relative overflow-hidden`}>
+        
+        {/* Texture & Lighting Overlays */}
+        <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/leather.png')] opacity-20 pointer-events-none mix-blend-overlay"></div>
+        <div className="absolute inset-0 bg-gradient-to-tr from-black/40 via-transparent to-white/10 pointer-events-none"></div>
+        
+        {/* Giant Watermark Text */}
+        <div className="absolute -right-4 top-10 text-9xl font-black text-white/5 opacity-[0.07] rotate-90 pointer-events-none font-serif tracking-tighter select-none">
+          {style.watermark}
+        </div>
 
-      <div className="flex justify-between items-start mb-4 relative z-10">
-        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${levelBadge[book.level]}`}>
-          {levelText[book.level]}
-        </span>
-        <div className={`p-1.5 rounded-full ${statusColor[book.status]} transition-colors`}>
-          {book.status === BookStatus.FINISHED ? <Check size={14} /> : 
-           book.status === BookStatus.READING ? <Clock size={14} /> : 
-           <BookOpen size={14} />}
+        {/* --- Cover Content --- */}
+        <div className="relative z-10 flex flex-col h-full p-5">
+          
+          {/* Top: Category Tag & Status */}
+          <div className="flex justify-between items-start mb-6">
+            <span className="text-[9px] font-bold tracking-[0.2em] uppercase text-white/70 border-b border-white/20 pb-1">
+              {book.category}
+            </span>
+            <div className={`p-1.5 rounded-full backdrop-blur-md transition-all ${statusIndicator[book.status].bg} ${statusIndicator[book.status].color}`}>
+               <StatusIcon size={14} strokeWidth={3} />
+            </div>
+          </div>
+
+          {/* Center: Title & Author */}
+          <div className="my-auto">
+            <h3 className={`font-serif text-white font-bold leading-tight drop-shadow-md ${compact ? 'text-sm' : 'text-xl'}`}>
+              {book.title}
+            </h3>
+            <div className={`w-8 h-1 ${style.accent} mt-3 mb-2 rounded-full`}></div>
+            <p className="text-white/80 text-xs font-medium tracking-wide">
+              {book.author}
+            </p>
+          </div>
+
+          {/* Bottom: Publisher & Level Indicator */}
+          <div className="mt-auto pt-4 border-t border-white/10">
+            {book.status === BookStatus.READING && book.userData ? (
+              <div className="space-y-2">
+                <div className="flex justify-between text-[10px] text-white/70 font-medium">
+                   <span>阅读进度</span>
+                   <span>{Math.round(book.userData.progressPercentage)}%</span>
+                </div>
+                <div className="w-full bg-black/30 h-1.5 rounded-full overflow-hidden">
+                   <div className={`${style.accent} h-full transition-all duration-500`} style={{ width: `${book.userData.progressPercentage}%` }} />
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                 <div className="flex items-center justify-between">
+                    <div className="flex flex-col">
+                      <span className={`text-[10px] font-bold uppercase tracking-wider ${style.textAccent}`}>
+                        {style.label}
+                      </span>
+                      <span className="text-[9px] text-white/40 scale-90 origin-left">
+                        {style.subLabel}
+                      </span>
+                    </div>
+                    {renderBars()}
+                 </div>
+                 {book.publisher && (
+                   <div className="flex items-center text-[9px] text-white/40 mt-1 truncate">
+                     <Building2 size={10} className="mr-1 shrink-0" />
+                     <span className="truncate">{book.publisher}</span>
+                   </div>
+                 )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-      
-      <h3 className="font-bold text-slate-900 text-lg leading-snug line-clamp-2 mb-1 group-hover:text-indigo-600 transition-colors z-10">
-        {book.title}
-      </h3>
-      <p className="text-sm text-slate-500 mb-5 font-medium z-10">{book.author}</p>
-      
-      <div className="mt-auto z-10">
-        {book.status === BookStatus.READING && book.userData && (
-          <div className="space-y-2">
-             <div className="flex justify-between text-xs text-slate-500 font-medium">
-               <span>当前进度</span>
-               <span className="text-indigo-600">{Math.round(book.userData.progressPercentage)}%</span>
-             </div>
-             <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                <div 
-                  className="bg-indigo-600 h-1.5 rounded-full transition-all duration-500 ease-out" 
-                  style={{ width: `${book.userData.progressPercentage}%` }}
-                />
-             </div>
-          </div>
-        )}
-        
-        {book.status === BookStatus.UNREAD && (
-          <div className="flex items-center text-xs font-semibold text-slate-400 group-hover:text-indigo-600 transition-colors">
-            <TrendingUp size={14} className="mr-1.5" />
-            点击开始阅读
-          </div>
-        )}
 
-        {book.status === BookStatus.FINISHED && (
-          <div className="flex items-center text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-1 rounded inline-block">
-             已完成
-          </div>
-        )}
+      {/* 3D Paper Pages Effect */}
+      <div className="absolute top-[6px] bottom-[6px] right-[1px] w-3 bg-[#f5f5f0] border-l border-slate-200 transform translate-x-2 -translate-z-4 z-[-1] rounded-r-[2px] shadow-sm flex flex-col justify-end overflow-hidden">
+        <div className="w-full h-px bg-slate-200 my-[1px]"></div>
+        <div className="w-full h-px bg-slate-200 my-[1px]"></div>
+        <div className="w-full h-px bg-slate-200 my-[1px]"></div>
+        <div className="w-full h-px bg-slate-200 my-[1px]"></div>
+        <div className="w-full h-px bg-slate-200 my-[1px]"></div>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Book, BookStatus, BookLevel } from '../types';
-import { Trash2, Edit2, CheckCircle2, Circle, Wand2 } from 'lucide-react';
+import { Trash2, Edit2, CheckCircle2, Circle, Wand2, Signal, SignalMedium, SignalHigh } from 'lucide-react';
 import { Button } from './Button';
 
 interface LibraryTableProps {
@@ -17,16 +17,22 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
     [BookStatus.FINISHED]: '已读',
   };
 
-  const levelLabels = {
-    [BookLevel.BASIC]: '基础',
-    [BookLevel.ADVANCED]: '进阶',
-    [BookLevel.EXPERT]: '专家',
-  };
-
-  const levelColor = {
-    [BookLevel.BASIC]: 'text-green-600 bg-green-50',
-    [BookLevel.ADVANCED]: 'text-yellow-600 bg-yellow-50',
-    [BookLevel.EXPERT]: 'text-red-600 bg-red-50',
+  const levelConfig = {
+    [BookLevel.BASIC]: {
+      label: '基础',
+      style: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+      icon: <SignalMedium size={14} className="mr-1" />
+    },
+    [BookLevel.ADVANCED]: {
+      label: '进阶',
+      style: 'bg-blue-50 text-blue-700 border border-blue-200',
+      icon: <SignalHigh size={14} className="mr-1" />
+    },
+    [BookLevel.EXPERT]: {
+      label: '专家',
+      style: 'bg-slate-50 text-rose-700 border border-rose-200 font-bold',
+      icon: <Signal size={14} className="mr-1" />
+    },
   };
 
   return (
@@ -53,7 +59,7 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
               <tr>
                 <th className="px-6 py-4">书名 / 作者</th>
                 <th className="px-6 py-4">分类</th>
-                <th className="px-6 py-4">难度</th>
+                <th className="px-6 py-4">难度评级</th>
                 <th className="px-6 py-4">状态</th>
                 <th className="px-6 py-4 text-right">操作</th>
               </tr>
@@ -69,17 +75,18 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
                 books.map((book) => (
                   <tr key={book.id} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-6 py-4">
-                      <div className="font-medium text-slate-900">{book.title}</div>
-                      <div className="text-slate-500 text-xs">{book.author}</div>
+                      <div className="font-medium text-slate-900 font-serif text-base">{book.title}</div>
+                      <div className="text-slate-500 text-xs mt-0.5">{book.author}</div>
                     </td>
                     <td className="px-6 py-4 text-slate-600">
-                      <span className="inline-block px-2 py-1 bg-slate-100 rounded text-xs">
+                      <span className="inline-block px-2.5 py-1 bg-slate-100 rounded-md text-xs font-medium border border-slate-200">
                         {book.category}
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium ${levelColor[book.level]}`}>
-                        {levelLabels[book.level]}
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium ${levelConfig[book.level].style}`}>
+                        {levelConfig[book.level].icon}
+                        {levelConfig[book.level].label}
                       </span>
                     </td>
                     <td className="px-6 py-4">
@@ -92,8 +99,8 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
                            <Circle size={16} className="text-slate-300" />
                          )}
                          <span className={
-                           book.status === BookStatus.FINISHED ? 'text-emerald-700' :
-                           book.status === BookStatus.READING ? 'text-blue-700' : 'text-slate-500'
+                           book.status === BookStatus.FINISHED ? 'text-emerald-700 font-medium' :
+                           book.status === BookStatus.READING ? 'text-blue-700 font-medium' : 'text-slate-400'
                          }>
                            {statusLabels[book.status]}
                          </span>
@@ -102,10 +109,10 @@ export const LibraryTable: React.FC<LibraryTableProps> = ({ books, onDelete, onR
                     <td className="px-6 py-4 text-right">
                       <button 
                         onClick={() => onDelete(book.id)}
-                        className="text-slate-400 hover:text-red-600 transition-colors p-2"
+                        className="text-slate-400 hover:text-red-600 transition-colors p-2 hover:bg-red-50 rounded-lg"
                         title="删除"
                       >
-                        <Trash2 size={18} />
+                        <Trash2 size={16} />
                       </button>
                     </td>
                   </tr>
