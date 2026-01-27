@@ -91,7 +91,7 @@ export const generateBookInsight = async (title: string, author: string, level: 
 输出结构：
 {
   "summary": "200字以内的中文简介",
-  "advice": "针对 ${level} 难度的具体阅读策略",
+  "advice": "针对 ${level} 难度的具体阅读策略和建议",
   "keyChapters": ["核心章节1", "核心章节2", "核心章节3"]
 }`;
 
@@ -122,7 +122,7 @@ export const generateReadingPath = async (books: Book[], categoryName: string): 
 输出结构：
 {
   "sortedBookIds": ["id1", "id2", ...],
-  "reasoning": "规划理由"
+  "reasoning": "规划理由和建议"
 }`;
 
   const userPrompt = `用户有一组关于 "${categoryName}" 的书籍。
@@ -161,7 +161,7 @@ export const recommendBooks = async (currentBooks: Book[], categoryName: string,
   const systemPrompt = `你是一个严谨的学术顾问。
 **推荐逻辑原则**：
 1. 查漏补缺，构建完整视角。
-2. 必须推荐最佳中文译本。
+2. 优先推荐最佳中文译本。
 3. 严禁推荐畅销快餐书。
 
 **输出格式**：

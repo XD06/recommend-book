@@ -6,7 +6,8 @@ import { BookDetail } from './components/BookDetail';
 import { LibraryTable } from './components/LibraryTable';
 import { Sidebar } from './components/Sidebar';
 import { CategoryAdvisor } from './components/CategoryAdvisor';
-import { LayoutGrid, Table2, Layers, Sparkles } from 'lucide-react';
+import { DataManagement } from './components/DataManagement';
+import { LayoutGrid, Table2, Layers, Sparkles, BookOpen, CheckCircle2, Clock, BarChart3, TrendingUp, Trophy } from 'lucide-react';
 import { Button } from './components/Button';
 import { generateReadingPath, reorganizeLibrary } from './services/geminiService';
 import { v4 as uuidv4 } from 'uuid';
@@ -41,7 +42,7 @@ const App: React.FC = () => {
   const [categoryMeta, setCategoryMeta] = useLocalStorage<Record<string, CategoryMeta>>('deepread_category_meta', {});
   
   // UI State
-  const [activeTab, setActiveTab] = useState('library'); // 'library', 'stats'
+  const [activeTab, setActiveTab] = useState('library'); // 'library', 'stats', 'settings'
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedLevel, setSelectedLevel] = useState<BookLevel | 'All'>('All');
   const [statusFilter, setStatusFilter] = useState<BookStatus | 'All'>('All');
@@ -65,10 +66,31 @@ const App: React.FC = () => {
   // Statistics
   const stats = React.useMemo(() => {
     const total = books.length;
-    const reading = books.filter(b => b.status === BookStatus.READING).length;
+    const readingBooks = books.filter(b => b.status === BookStatus.READING);
+    const reading = readingBooks.length;
     const finished = books.filter(b => b.status === BookStatus.FINISHED).length;
     const unread = total - reading - finished;
-    return { total, reading, finished, unread };
+    
+    // Calculate pages
+    let totalPagesRead = 0;
+    books.forEach(b => {
+      if (b.userData) {
+        if (b.status === BookStatus.FINISHED) {
+          totalPagesRead += b.userData.totalPages;
+        } else {
+          totalPagesRead += b.userData.currentPage;
+        }
+      }
+    });
+
+    // Level distribution
+    const levels = {
+      [BookLevel.BASIC]: books.filter(b => b.level === BookLevel.BASIC).length,
+      [BookLevel.ADVANCED]: books.filter(b => b.level === BookLevel.ADVANCED).length,
+      [BookLevel.EXPERT]: books.filter(b => b.level === BookLevel.EXPERT).length,
+    };
+
+    return { total, reading, finished, unread, totalPagesRead, readingBooks, levels };
   }, [books]);
 
   // Handle ingestion
@@ -161,6 +183,66 @@ const App: React.FC = () => {
     }
   };
 
+  // Backup & Restore Handlers
+  const handleExportData = () => {
+    const backupData = {
+      meta: {
+        version: '1.0',
+        appName: 'DeepRead MVP',
+        exportDate: new Date().toISOString(),
+        totalBooks: books.length
+      },
+      data: {
+        books: books,
+        categoryMeta: categoryMeta
+      }
+    };
+
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `DeepRead_Backup_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportData = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const content = e.target?.result as string;
+        const parsed = JSON.parse(content);
+
+        // Basic validation structure
+        if (!parsed.data || !Array.isArray(parsed.data.books)) {
+          throw new Error('无效的备份文件格式');
+        }
+
+        const confirmMsg = `
+检测到有效备份文件：
+📅 导出时间：${new Date(parsed.meta?.exportDate || Date.now()).toLocaleString()}
+📚 书籍数量：${parsed.data.books.length} 本
+
+警告：导入将覆盖当前所有数据，此操作不可撤销！
+是否确认恢复？`;
+
+        if (window.confirm(confirmMsg)) {
+          setBooks(parsed.data.books);
+          setCategoryMeta(parsed.data.categoryMeta || {});
+          alert('✅ 数据已成功恢复！');
+          setActiveTab('library');
+        }
+      } catch (err) {
+        console.error(err);
+        alert('❌ 导入失败：文件格式错误或数据损坏');
+      }
+    };
+    reader.readAsText(file);
+  };
+
   // Filter Logic
   const filteredBooks = React.useMemo(() => {
     let result = books.filter(book => {
@@ -203,11 +285,13 @@ const App: React.FC = () => {
             <div>
               <h1 className="text-3xl font-serif font-bold text-slate-900">
                 {showIngestion ? '导入书籍' : 
-                 activeTab === 'library' ? '我的私人图书馆' : '阅读数据'}
+                 activeTab === 'library' ? '我的私人图书馆' : 
+                 activeTab === 'stats' ? '阅读数据中心' : '数据管理'}
               </h1>
               <p className="text-slate-500 mt-1">
                 {showIngestion ? '批量粘贴书单，AI 自动整理' :
-                 activeTab === 'library' ? `共藏书 ${stats.total} 本，正在阅读 ${stats.reading} 本` : '您的阅读习惯分析'}
+                 activeTab === 'library' ? `共藏书 ${stats.total} 本，正在阅读 ${stats.reading} 本` :
+                 activeTab === 'stats' ? '全方位分析您的阅读习惯' : '备份与迁移您的个人数据'}
               </p>
             </div>
             
@@ -225,12 +309,184 @@ const App: React.FC = () => {
                onComplete={handleIngestionComplete} 
                existingCategories={categories.map(c => c.name)}
              />
+          ) : activeTab === 'settings' ? (
+             <DataManagement 
+               onExport={handleExportData} 
+               onImport={handleImportData}
+               stats={{
+                 totalBooks: books.length,
+                 categoriesCount: categories.length,
+                 lastUpdated: new Date().toLocaleDateString()
+               }}
+             />
           ) : activeTab === 'stats' ? (
-             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {/* Simple Stats Placeholder */}
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                   <h3 className="text-lg font-bold text-slate-700 mb-2">阅读完成率</h3>
-                   <div className="text-4xl font-bold text-indigo-600">{stats.total ? Math.round((stats.finished / stats.total) * 100) : 0}%</div>
+             <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                
+                {/* 1. Key Metrics Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-start justify-between">
+                    <div>
+                      <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">正在阅读</p>
+                      <h3 className="text-3xl font-bold text-indigo-600">{stats.reading}</h3>
+                      <p className="text-xs text-slate-400 mt-2">书本进行中</p>
+                    </div>
+                    <div className="p-3 bg-indigo-50 text-indigo-600 rounded-xl">
+                      <Clock size={20} />
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-start justify-between">
+                    <div>
+                      <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">已读完</p>
+                      <h3 className="text-3xl font-bold text-emerald-600">{stats.finished}</h3>
+                      <p className="text-xs text-slate-400 mt-2">获得成就感</p>
+                    </div>
+                    <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
+                      <CheckCircle2 size={20} />
+                    </div>
+                  </div>
+
+                  <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-start justify-between">
+                    <div>
+                      <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">累计阅读页数</p>
+                      <h3 className="text-3xl font-bold text-amber-600">{stats.totalPagesRead.toLocaleString()}</h3>
+                      <p className="text-xs text-slate-400 mt-2">知识的厚度</p>
+                    </div>
+                    <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
+                      <BookOpen size={20} />
+                    </div>
+                  </div>
+
+                   <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex items-start justify-between">
+                    <div>
+                      <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">藏书总数</p>
+                      <h3 className="text-3xl font-bold text-slate-700">{stats.total}</h3>
+                      <p className="text-xs text-slate-400 mt-2">待探索 {stats.unread} 本</p>
+                    </div>
+                    <div className="p-3 bg-slate-100 text-slate-600 rounded-xl">
+                      <Layers size={20} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Currently Reading List */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  <div className="lg:col-span-2 space-y-4">
+                    <h3 className="text-lg font-bold text-slate-800 flex items-center">
+                      <TrendingUp size={20} className="mr-2 text-indigo-500" /> 
+                      正在阅读 ({stats.reading})
+                    </h3>
+                    
+                    {stats.readingBooks.length === 0 ? (
+                      <div className="bg-white rounded-2xl border border-dashed border-slate-300 p-8 text-center">
+                        <div className="w-16 h-16 bg-slate-50 text-slate-300 rounded-full flex items-center justify-center mx-auto mb-4">
+                          <BookOpen size={24} />
+                        </div>
+                        <h4 className="text-slate-600 font-medium mb-2">当前没有正在阅读的书籍</h4>
+                        <p className="text-slate-400 text-sm mb-4">从书库中挑选一本，开始您的深度阅读之旅吧。</p>
+                        <Button onClick={() => setActiveTab('library')}>去书库选书</Button>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-4">
+                        {stats.readingBooks.map(book => (
+                          <div key={book.id} className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-5 items-center sm:items-stretch">
+                            {/* Visual Cover Placeholder */}
+                            <div className={`w-16 h-24 shrink-0 rounded shadow-md bg-gradient-to-br ${
+                              book.level === BookLevel.BASIC ? 'from-emerald-600 to-teal-800' :
+                              book.level === BookLevel.ADVANCED ? 'from-blue-700 to-indigo-900' : 'from-red-800 to-rose-950'
+                            } flex items-center justify-center text-white/20 font-serif font-bold`}>
+                              {book.level[0]}
+                            </div>
+                            
+                            <div className="flex-1 w-full">
+                              <div className="flex justify-between items-start mb-1">
+                                <h4 className="font-serif font-bold text-lg text-slate-900">{book.title}</h4>
+                                <span className="text-2xl font-bold text-indigo-600">{Math.round(book.userData?.progressPercentage || 0)}%</span>
+                              </div>
+                              <p className="text-sm text-slate-500 mb-4">{book.author}</p>
+                              
+                              <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden mb-2">
+                                <div 
+                                  className="bg-indigo-600 h-full rounded-full transition-all duration-500" 
+                                  style={{ width: `${book.userData?.progressPercentage || 0}%` }}
+                                ></div>
+                              </div>
+                              
+                              <div className="flex justify-between items-center text-xs text-slate-400">
+                                <span>
+                                  {book.userData?.currentPage || 0} / {book.userData?.totalPages || '?'} 页
+                                </span>
+                                {book.userData?.totalPages && book.userData.currentPage < book.userData.totalPages && (
+                                  <span>剩余 {book.userData.totalPages - book.userData.currentPage} 页</span>
+                                )}
+                              </div>
+                            </div>
+                            
+                            <div className="flex sm:flex-col justify-center gap-2 w-full sm:w-auto mt-2 sm:mt-0 border-t sm:border-t-0 sm:border-l border-slate-100 pt-3 sm:pt-0 sm:pl-4">
+                              <Button size="sm" onClick={() => setSelectedBook(book)} className="w-full sm:w-24">更新进度</Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Stats & Distribution */}
+                  <div className="space-y-6">
+                    {/* Difficulty Distribution */}
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                       <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-6 flex items-center">
+                         <BarChart3 size={16} className="mr-2" /> 藏书难度分布
+                       </h3>
+                       <div className="space-y-5">
+                         {[
+                           { label: '入门 (Basic)', count: stats.levels[BookLevel.BASIC], color: 'bg-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-700' },
+                           { label: '进阶 (Advanced)', count: stats.levels[BookLevel.ADVANCED], color: 'bg-blue-500', bg: 'bg-blue-50', text: 'text-blue-700' },
+                           { label: '专家 (Expert)', count: stats.levels[BookLevel.EXPERT], color: 'bg-rose-500', bg: 'bg-rose-50', text: 'text-rose-700' },
+                         ].map((item) => (
+                           <div key={item.label}>
+                             <div className="flex justify-between text-xs font-medium mb-1.5">
+                               <span className={item.text}>{item.label}</span>
+                               <span className="text-slate-400">{item.count} 本</span>
+                             </div>
+                             <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                               <div 
+                                 className={`h-full ${item.color} rounded-full transition-all duration-500`}
+                                 style={{ width: `${stats.total ? (item.count / stats.total * 100) : 0}%` }}
+                               ></div>
+                             </div>
+                           </div>
+                         ))}
+                       </div>
+                    </div>
+
+                    {/* Top Categories */}
+                    <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+                       <h3 className="text-sm font-bold text-slate-800 uppercase tracking-wider mb-4 flex items-center">
+                         <Trophy size={16} className="mr-2" /> 热门分类
+                       </h3>
+                       <div className="space-y-3">
+                         {categories.sort((a, b) => b.count - a.count).slice(0, 5).map((cat, idx) => (
+                           <div key={cat.name} className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-100">
+                             <div className="flex items-center gap-3">
+                               <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
+                                 idx === 0 ? 'bg-yellow-100 text-yellow-700' : 
+                                 idx === 1 ? 'bg-slate-200 text-slate-600' :
+                                 idx === 2 ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-400'
+                               }`}>
+                                 {idx + 1}
+                               </span>
+                               <span className="text-sm font-medium text-slate-700">{cat.name}</span>
+                             </div>
+                             <span className="text-xs font-bold text-slate-400 bg-white px-2 py-0.5 rounded border border-slate-200 shadow-sm">
+                               {cat.count}
+                             </span>
+                           </div>
+                         ))}
+                         {categories.length === 0 && <p className="text-sm text-slate-400 text-center py-4">暂无分类数据</p>}
+                       </div>
+                    </div>
+                  </div>
                 </div>
              </div>
           ) : (

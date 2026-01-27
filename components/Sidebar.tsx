@@ -11,6 +11,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onImpo
   const navItems = [
     { id: 'library', label: '我的书库', icon: Library },
     { id: 'stats', label: '阅读统计', icon: BarChart3 },
+    { id: 'settings', label: '数据管理', icon: Settings },
   ];
 
   return (
