@@ -247,22 +247,32 @@ ${JSON.stringify(simplifiedBooks)}`;
   }
 };
 
-export const recommendBooks = async (currentBooks: Book[], categoryName: string, customRequirements?: string): Promise<Recommendation[]> => {
-  const simplifiedBooks = currentBooks.map(b => ({ title: b.title, author: b.author, category: b.category }));
+export const recommendBooks = async (
+  currentBooks: Book[], 
+  categoryName: string, 
+  subcategoryName?: string | null,
+  customRequirements?: string
+): Promise<Recommendation[]> => {
+  const simplifiedBooks = currentBooks.map(b => ({ title: b.title, author: b.author, category: b.category, subcategory: b.subcategory }));
   
+  const contextScope = subcategoryName 
+    ? `领域：${categoryName} / 具体子主题：${subcategoryName}` 
+    : `领域：${categoryName}`;
+
   const existingContext = currentBooks.length > 0 
-    ? `用户当前已拥有以下 "${categoryName}" 类书籍（请勿重复推荐）：\n${JSON.stringify(simplifiedBooks)}`
-    : `用户对 "${categoryName}" 感兴趣。`;
+    ? `用户在【${contextScope}】下已拥有以下书籍（请勿重复推荐）：\n${JSON.stringify(simplifiedBooks)}`
+    : `用户对【${contextScope}】感兴趣。`;
 
   const requirementPrompt = customRequirements 
     ? `**用户特别要求（必须优先满足）**：${customRequirements}。`
-    : `请推荐 3-5 本**绝对经典、经过时间考验的权威著作**来填补知识盲区。`;
+    : `请推荐 3-5 本**该具体子领域内**绝对经典、经过时间考验的权威著作来填补知识盲区。`;
 
   const systemPrompt = `你是一个严谨的学术顾问。
 **推荐逻辑原则**：
 1. 查漏补缺，构建完整视角。
 2. 优先推荐最佳中文译本。
 3. 严禁推荐畅销快餐书。
+4. **极度专注**：如果提供了子主题，必须推荐该子主题下的书，不要推荐宽泛的通识书。
 
 **输出格式**：
 必须严格返回 JSON 对象：

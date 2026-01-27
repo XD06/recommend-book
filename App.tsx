@@ -545,7 +545,7 @@ const App: React.FC = () => {
                        <div className="space-y-5">
                          {[
                            { label: '入门 (Basic)', count: stats.levels[BookLevel.BASIC], color: 'bg-emerald-500', bg: 'bg-emerald-50', text: 'text-emerald-700' },
-                           { label: '进阶 (Advanced)', count: stats.levels[BookLevel.ADVANCED], color: 'bg-blue-500', bg: 'bg-blue-50', text: 'text-blue-700' },
+                           { label: '进阶 (Advanced)', count: stats.levels[BookLevel.ADVANCED], color: 'bg-blue-50', bg: 'bg-blue-50', text: 'text-blue-700' },
                            { label: '专家 (Expert)', count: stats.levels[BookLevel.EXPERT], color: 'bg-rose-500', bg: 'bg-rose-50', text: 'text-rose-700' },
                          ].map((item) => (
                            <div key={item.label}>
@@ -674,10 +674,11 @@ const App: React.FC = () => {
                   )}
                </div>
 
-               {/* Contextual AI Advisor */}
-               {selectedCategory && !selectedSubcategory && (
+               {/* Contextual AI Advisor - Now shows even if subcategory is selected */}
+               {selectedCategory && (
                   <CategoryAdvisor 
-                    category={selectedCategory} 
+                    category={selectedCategory}
+                    subcategory={selectedSubcategory} 
                     books={filteredBooks}
                     onAddBook={handleAddRecommendation}
                   />

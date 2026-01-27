@@ -1,27 +1,33 @@
 import React, { useState } from 'react';
 import { Book, Recommendation } from '../types';
-import { Sparkles, ArrowRight, Plus, Loader2, MessageSquare, X, BookOpen } from 'lucide-react';
+import { Sparkles, ArrowRight, Plus, Loader2, MessageSquare, X, BookOpen, ChevronRight } from 'lucide-react';
 import { Button } from './Button';
 import { recommendBooks } from '../services/geminiService';
 
 interface CategoryAdvisorProps {
   category: string;
+  subcategory?: string | null;
   books: Book[];
   onAddBook: (rec: Recommendation) => void;
 }
 
-export const CategoryAdvisor: React.FC<CategoryAdvisorProps> = ({ category, books, onAddBook }) => {
+export const CategoryAdvisor: React.FC<CategoryAdvisorProps> = ({ category, subcategory, books, onAddBook }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [requirements, setRequirements] = useState('');
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Dynamic context text based on depth
+  const contextText = subcategory 
+    ? `${category} > ${subcategory}` 
+    : category;
+
   const handleRecommend = async () => {
     setLoading(true);
     setRecommendations([]);
     try {
-      // Pass the current books context + user requirements
-      const recs = await recommendBooks(books, category, requirements);
+      // Pass the current books context + subcategory + user requirements
+      const recs = await recommendBooks(books, category, subcategory, requirements);
       setRecommendations(recs);
     } catch (error) {
       console.error(error);
@@ -42,7 +48,9 @@ export const CategoryAdvisor: React.FC<CategoryAdvisorProps> = ({ category, book
             <Sparkles size={20} />
           </div>
           <div className="text-left">
-            <h3 className="font-bold text-slate-900 text-sm">需要《{category}》领域的选书建议？</h3>
+            <h3 className="font-bold text-slate-900 text-sm flex items-center">
+              需要《{contextText}》领域的建议？
+            </h3>
             <p className="text-slate-500 text-xs mt-0.5">
               基于您现有的 {books.length} 本书，AI 将为您推荐补充读物
             </p>
@@ -64,9 +72,19 @@ export const CategoryAdvisor: React.FC<CategoryAdvisorProps> = ({ category, book
              <Sparkles size={18} className="text-indigo-600" />
           </div>
           <div>
-            <h3 className="font-bold text-slate-900 text-sm">AI 选书顾问 - {category} 专区</h3>
+            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-1">
+              AI 选书顾问
+              <ChevronRight size={14} className="text-slate-400"/>
+              {category}
+              {subcategory && (
+                <>
+                  <ChevronRight size={14} className="text-slate-400"/>
+                  <span className="text-indigo-700">{subcategory}</span>
+                </>
+              )}
+            </h3>
             <p className="text-slate-500 text-xs mt-1 leading-relaxed max-w-xl">
-              我已经分析了您在这个分类下的 {books.length} 本藏书。
+              我已经分析了您在这个{subcategory ? '子主题' : '分类'}下的 {books.length} 本藏书。
               <br/>您可以告诉我具体的阅读目标（例如：“想找关于该领域发展史的书”），或者留空让我自由发挥。
             </p>
           </div>

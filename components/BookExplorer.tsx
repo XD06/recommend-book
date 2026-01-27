@@ -41,7 +41,8 @@ export const BookExplorer: React.FC<BookExplorerProps> = ({ categories, books, o
         ? books.filter(b => b.category === selectedCategory) 
         : books;
 
-      const recs = await recommendBooks(relevantBooks, catContext, finalPrompt);
+      // Pass null for subcategory to maintain old behavior (general context or specified in prompt)
+      const recs = await recommendBooks(relevantBooks, catContext, null, finalPrompt);
       setRecommendations(recs);
     } catch (e) {
       console.error(e);
