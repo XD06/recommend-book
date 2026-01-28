@@ -60,6 +60,18 @@ export interface Recommendation {
   publisher: string;
   reason: string;
   level: BookLevel;
+  // Optional fields for external recommendations used in Advisor
+  category?: string; 
+  subcategory?: string;
+}
+
+export interface AdvisorResponse {
+  analysis: string; // AI's analysis of the user's problem
+  libraryMatches: {
+    bookId: string;
+    reason: string;
+  }[];
+  externalMatches: Recommendation[];
 }
 
 export interface DebugLogItem {

@@ -6,6 +6,7 @@ import { BookDetail } from './components/BookDetail';
 import { LibraryTable } from './components/LibraryTable';
 import { Sidebar } from './components/Sidebar';
 import { CategoryAdvisor } from './components/CategoryAdvisor';
+import { AIAdvisor } from './components/AIAdvisor'; // Import
 import { DataManagement } from './components/DataManagement';
 import { LayoutGrid, Table2, Layers, Sparkles, BookOpen, CheckCircle2, Clock, BarChart3, TrendingUp, Trophy, Tag, Map, SlidersHorizontal } from 'lucide-react';
 import { Button } from './components/Button';
@@ -43,7 +44,7 @@ const App: React.FC = () => {
   const [categoryMeta, setCategoryMeta] = useLocalStorage<Record<string, CategoryMeta>>('deepread_category_meta', {});
   
   // UI State
-  const [activeTab, setActiveTab] = useState('library'); // 'library', 'stats', 'settings'
+  const [activeTab, setActiveTab] = useState('library'); // 'library', 'stats', 'settings', 'advisor'
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
   const [selectedLevel, setSelectedLevel] = useState<BookLevel | 'All'>('All');
@@ -157,8 +158,8 @@ const App: React.FC = () => {
       title: rec.title,
       author: rec.author,
       publisher: rec.publisher,
-      category: selectedCategory || '未分类',
-      subcategory: selectedSubcategory || 'General', // Default subcategory if active
+      category: rec.category || selectedCategory || '未分类',
+      subcategory: rec.subcategory || selectedSubcategory || 'General',
       level: rec.level,
       status: BookStatus.UNREAD
     };
@@ -390,11 +391,13 @@ const App: React.FC = () => {
               <h1 className="text-2xl md:text-3xl font-serif font-bold text-slate-900">
                 {showIngestion ? '导入书籍' : 
                  activeTab === 'library' ? '我的私人图书馆' : 
+                 activeTab === 'advisor' ? 'AI 阅读顾问' :
                  activeTab === 'stats' ? '阅读数据中心' : '数据管理'}
               </h1>
               <p className="text-sm md:text-base text-slate-500 mt-1">
                 {showIngestion ? '批量粘贴书单，AI 自动整理' :
                  activeTab === 'library' ? `共藏书 ${stats.total} 本，正在阅读 ${stats.reading} 本` :
+                 activeTab === 'advisor' ? '不知道读什么？告诉顾问您的烦恼或目标。' :
                  activeTab === 'stats' ? '全方位分析您的阅读习惯' : '备份与迁移您的个人数据'}
               </p>
             </div>
@@ -422,6 +425,12 @@ const App: React.FC = () => {
                  categoriesCount: categories.length,
                  lastUpdated: new Date().toLocaleDateString()
                }}
+             />
+          ) : activeTab === 'advisor' ? (
+             <AIAdvisor 
+               books={books} 
+               onSelectBook={setSelectedBook} 
+               onAddBook={handleAddRecommendation} 
              />
           ) : activeTab === 'stats' ? (
              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">

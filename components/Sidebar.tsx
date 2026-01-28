@@ -1,5 +1,5 @@
 import React from 'react';
-import { Library, BarChart3, Settings, Plus } from 'lucide-react';
+import { Library, BarChart3, Settings, Plus, Sparkles } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -10,6 +10,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, onTabChange, onImportClick }) => {
   const navItems = [
     { id: 'library', label: '书库', icon: Library },
+    { id: 'advisor', label: '顾问', icon: Sparkles }, // New Item
     { id: 'stats', label: '统计', icon: BarChart3 },
     { id: 'settings', label: '管理', icon: Settings },
   ];

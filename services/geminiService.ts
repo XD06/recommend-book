@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation, DebugLogItem } from "../types";
+import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation, DebugLogItem, AdvisorResponse } from "../types";
 import { v4 as uuidv4 } from 'uuid';
 
 // ============================================================================
@@ -422,6 +422,76 @@ export const refineSubcategories = async (books: Book[], category: string, userI
   } catch (error) {
     console.error("Refining subcategories failed", error);
     addLog('refineSubcategories', { system: systemPrompt, user: userPrompt }, null, null, error);
+    throw error;
+  }
+};
+
+// New function for AI Advisor
+export const getPersonalizedRecommendations = async (userRequest: string, currentLibrary: Book[]): Promise<AdvisorResponse> => {
+  // 简化书库数据以节省 Context
+  const simplifiedLibrary = currentLibrary.map(b => ({
+    id: b.id,
+    title: b.title,
+    author: b.author,
+    category: b.category,
+    subcategory: b.subcategory,
+    status: b.status,
+    insight: b.aiInsight?.summary ? b.aiInsight.summary.slice(0, 50) : ''
+  }));
+
+  const systemPrompt = `你是一个智慧的私人阅读顾问（Bibliotherapist）。
+用户的诉求可能是明确的学习目标（如“想学架构设计”），也可能是模糊的情感困扰（如“感到焦虑”）。
+
+**任务流程**：
+1. **分析诉求**：简要分析用户的问题核心。
+2. **内网检索（优先）**：在用户的【现有书库】中寻找最匹配的书籍。如果用户有未读的相关书籍，优先推荐。
+3. **全网搜寻（补充）**：如果现有书库没有合适的，或者现有书籍不够解决问题，请推荐【外部新书】。
+
+**输出 JSON 格式**：
+{
+  "analysis": "对用户需求的同理心分析和解题思路（100字以内）",
+  "libraryMatches": [
+    { "bookId": "对应现有书库中的id", "reason": "为什么这本书适合解决当前问题" }
+  ],
+  "externalMatches": [
+    { 
+      "title": "书名", "author": "作者", "publisher": "出版社", 
+      "category": "建议归入的一级分类", "subcategory": "建议归入的二级分类", 
+      "level": "Basic/Advanced/Expert", "reason": "推荐理由" 
+    }
+  ]
+}
+
+**注意**：
+- 如果书库中有非常匹配的书，"libraryMatches" 应该有内容。
+- 如果书库完全不匹配，"libraryMatches" 可以为空。
+- "externalMatches" 用于补充缺口，通常推荐 2-3 本即可。
+`;
+
+  const userPrompt = `用户诉求："${userRequest}"
+
+现有书库数据：
+${JSON.stringify(simplifiedLibrary)}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      model: "deepseek-chat",
+      response_format: { type: "json_object" }
+    });
+
+    const raw = completion.choices[0].message.content;
+    const data = parseDeepSeekJSON(raw);
+    
+    addLog('getPersonalizedRecommendations', { system: systemPrompt, user: userPrompt }, data, raw);
+
+    return data as AdvisorResponse;
+  } catch (error) {
+    console.error("Advisor analysis failed", error);
+    addLog('getPersonalizedRecommendations', { system: systemPrompt, user: userPrompt }, null, null, error);
     throw error;
   }
 };
