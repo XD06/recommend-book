@@ -1,0 +1,1 @@
+{"root":["./src/index.ts","./src/prompts/bookclassifier.ts","./src/prompts/index.ts","./src/prompts/insightgenerator.ts","./src/prompts/readingadvisor.ts","./src/routes/ai.ts","./src/routes/douban.ts","./src/routes/index.ts","./src/services/aiservice.ts","./src/services/doubanservice.ts","./src/types/index.ts"],"version":"5.9.3"}

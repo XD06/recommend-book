@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Check Storage</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    pre { background: #f5f5f5; padding: 10px; overflow: auto; }
+    .book { border: 1px solid #ccc; margin: 10px 0; padding: 10px; }
+    .error { color: red; }
+    .ok { color: green; }
+  </style>
+</head>
+<body>
+  <h1>Storage Debug</h1>
+  <div id="output"></div>
+  <script>
+    const output = document.getElementById('output');
+    const library = JSON.parse(localStorage.getItem('deepread_library') || '[]');
+
+    output.innerHTML = `<p>Total books: ${library.length}</p>`;
+
+    library.forEach((book, i) => {
+      const div = document.createElement('div');
+      div.className = 'book';
+
+      const hasDoubanData = !!book.doubanData;
+      const hasCoverUrl = hasDoubanData && !!book.doubanData.cover_url;
+      const hasOldCover = hasDoubanData && !!book.doubanData.cover;
+      const hasBookWrapper = hasDoubanData && !!book.doubanData.book;
+
+      let status = '';
+      if (hasCoverUrl) status = '<span class="ok">OK: has cover_url</span>';
+      else if (hasOldCover) status = '<span class="error">ERROR: has old cover field</span>';
+      else if (hasBookWrapper) status = '<span class="error">ERROR: wrapped in book key</span>';
+      else status = '<span class="error">ERROR: no cover data</span>';
+
+      div.innerHTML = `
+        <h3>${i + 1}. ${book.title}</h3>
+        <p>${status}</p>
+        <pre>${JSON.stringify({
+          hasDoubanData,
+          hasCoverUrl,
+          hasOldCover,
+          hasBookWrapper,
+          doubanDataKeys: hasDoubanData ? Object.keys(book.doubanData) : null
+        }, null, 2)}</pre>
+      `;
+      output.appendChild(div);
+    });
+  </script>
+</body>
+</html>
