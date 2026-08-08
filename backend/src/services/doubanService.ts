@@ -13,7 +13,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 // ============ 配置 ============
-const PROXY_URL = process.env.DOUBAN_PROXY_URL || 'http://202607092247005606:jojzjen1@a963.zdtps.com:21166';
+const PROXY_URL = process.env.DOUBAN_PROXY_URL || '';
 const CACHE_FILE = path.join(process.cwd(), '..', 'cache.json'); // 项目根目录的 cache.json
 const USER_CACHE_FILE = path.join(process.cwd(), 'data', 'user-douban-cache.json'); // 运行时抓取的缓存
 
@@ -107,8 +107,6 @@ async function saveUserCache(): Promise<void> {
 async function scrapeBook(doubanId: string): Promise<CachedBook | null> {
   try {
     const { spawn } = await import('child_process');
-    const { promisify } = await import('util');
-    const exec = promisify(spawn);
 
     // 构建 Python 脚本调用
     const scriptPath = path.join(process.cwd(), '..', 'douban_mini', 'scraper.py');
@@ -122,7 +120,7 @@ sys.path.insert(0, '${path.dirname(scriptPath).replace(/\\/g, '\\\\')}')
 from scraper import DoubanMini
 
 async def main():
-    dm = DoubanMini(proxy_url="${PROXY_URL}", timeout=15, max_retries=3)
+    dm = DoubanMini(proxy_url=${PROXY_URL ? `"${PROXY_URL}"` : 'None'}, timeout=15, max_retries=3)
     await dm.start()
     try:
         book = await dm.get_book("${doubanId}")
@@ -223,47 +221,58 @@ async function searchDouban(keyword: string): Promise<Array<{ id: string; title:
     'Accept': 'application/json, text/plain, */*',
   };
 
-  // 代理配置
-  const proxyConfig = {
-    protocol: 'http' as const,
-    host: 'a963.zdtps.com',
-    port: 21166,
-    auth: {
-      username: '202607092247005606',
-      password: 'jojzjen1',
-    },
-  };
-
-  // 尝试代理（3次重试）
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  // 代理配置（从环境变量读取，避免硬编码凭据）
+  const proxyConfig = PROXY_URL ? (() => {
     try {
-      console.log(`[Douban] 搜索尝试 ${attempt}/3 (代理): ${keyword}`);
-      const response = await axios.get('https://book.douban.com/j/subject_suggest', {
-        params: { q: keyword },
-        headers,
-        timeout: 10000,
-        proxy: proxyConfig,
-      });
+      const url = new URL(PROXY_URL);
+      return {
+        protocol: url.protocol.replace(':', '') as 'http',
+        host: url.hostname,
+        port: parseInt(url.port, 10),
+        auth: url.username ? {
+          username: decodeURIComponent(url.username),
+          password: decodeURIComponent(url.password),
+        } : undefined,
+      };
+    } catch {
+      return undefined;
+    }
+  })() : undefined;
 
-      const results = response.data;
-      if (Array.isArray(results)) {
-        console.log(`[Douban] 代理搜索成功，找到 ${results.length} 条结果`);
-        return results
-          .filter((item: any) => item.type === 'b' || item.type === 'book')
-          .map((item: any) => ({
-            id: item.id,
-            title: item.title,
-            author: item.author_name || '',
-            year: item.year || '',
-            cover_url: item.pic || '',
-          }));
-      }
-    } catch (error: any) {
-      console.warn(`[Douban] 代理尝试 ${attempt} 失败:`, error.message);
-      if (attempt < 3) {
-        await new Promise(r => setTimeout(r, 1000 * attempt)); // 递增延迟
+  // 尝试代理（仅当配置了代理时）
+  if (proxyConfig) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        console.log(`[Douban] 搜索尝试 ${attempt}/3 (代理): ${keyword}`);
+        const response = await axios.get('https://book.douban.com/j/subject_suggest', {
+          params: { q: keyword },
+          headers,
+          timeout: 10000,
+          proxy: proxyConfig,
+        });
+
+        const results = response.data;
+        if (Array.isArray(results)) {
+          console.log(`[Douban] 代理搜索成功，找到 ${results.length} 条结果`);
+          return results
+            .filter((item: any) => item.type === 'b' || item.type === 'book')
+            .map((item: any) => ({
+              id: item.id,
+              title: item.title,
+              author: item.author_name || '',
+              year: item.year || '',
+              cover_url: item.pic || '',
+            }));
+        }
+      } catch (error: any) {
+        console.warn(`[Douban] 代理尝试 ${attempt} 失败:`, error.message);
+        if (attempt < 3) {
+          await new Promise(r => setTimeout(r, 1000 * attempt)); // 递增延迟
+        }
       }
     }
+  } else {
+    console.log('[Douban] 未配置代理，直接使用直连');
   }
 
   // 代理失败，尝试直连（3次重试）
@@ -384,7 +393,7 @@ export async function findBookByTitle(title: string): Promise<{ book: DoubanBook
 
   // 1. 先在本地缓存中模糊匹配
   const normalizedTitle = title.toLowerCase().replace(/[\s:：]/g, '');
-  for (const [id, cached] of memoryCache.entries()) {
+  for (const [, cached] of memoryCache.entries()) {
     const cachedTitle = cached.book.title.toLowerCase().replace(/[\s:：]/g, '');
     // 完全匹配或包含关系
     if (cachedTitle === normalizedTitle || 
@@ -417,7 +426,7 @@ export async function findBookByTitle(title: string): Promise<{ book: DoubanBook
   
   if (!cached) {
     console.log(`[Douban] 未缓存，抓取: ${bestMatch.title}`);
-    cached = await scrapeBook(bestMatch.id);
+    cached = await scrapeBook(bestMatch.id) || undefined;
   } else {
     console.log(`[Douban] 缓存命中: ${bestMatch.title}`);
   }

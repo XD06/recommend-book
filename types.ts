@@ -79,6 +79,17 @@ export interface DoubanBookData {
   url?: string;
   works_id?: string;
   scraped_at?: string;
+  tags?: Array<{ name: string; count: number }>;
+  images?: {
+    small: string;
+    medium: string;
+    large: string;
+  };
+  rating?: {
+    average: string;
+    numRaters: number;
+  };
+  comments?: DoubanComment[];
 }
 
 // ============================================================================
@@ -92,6 +103,7 @@ export interface Book {
   publisher?: string;
   category: string;
   subcategory: string;
+  tags?: string[];
   level: BookLevel;
   status: BookStatus;
   userData?: UserProgress;
@@ -99,11 +111,15 @@ export interface Book {
   coverColor?: string;
   coverUrl?: string;  // 代理格式的封面 URL
   rating?: number;
+  doubanRating?: number;
   // 豆瓣数据
   doubanId?: string;
   doubanData?: DoubanBookData;
   isbn?: string;
   pubDate?: string;
+  publishYear?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CategoryGroup {
@@ -112,9 +128,35 @@ export interface CategoryGroup {
   books: Book[];
 }
 
+export interface PathStage {
+  stage: number;
+  bookIds: string[];
+  theme: string;
+  description: string;
+}
+
 export interface ReadingPathResponse {
   sortedBookIds: string[];
   reasoning: string;
+  estimatedTotalDays?: number;
+  pathStages: PathStage[];
+}
+
+export type ReadingLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
+
+export interface UserProfile {
+  nickname?: string;
+  readingLevel: ReadingLevel;
+  readingGoal?: string;
+  preferredCategories: string[];
+  dailyReadingTime?: number;
+  aiAnalysis?: {
+    inferredLevel: ReadingLevel;
+    readingPattern: string;
+    blindSpots: string[];
+    recommendedFocus: string;
+    lastUpdated: string;
+  };
 }
 
 export interface CategoryMeta {

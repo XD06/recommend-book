@@ -84,6 +84,7 @@ const AppContent: React.FC = () => {
       alert('书库中已存在此书籍。'); 
       return; 
     }
+    const now = new Date().toISOString();
     const newBook: Book = {
       id: uuidv4(), 
       title: rec.title, 
@@ -95,6 +96,8 @@ const AppContent: React.FC = () => {
       status: BookStatus.UNREAD, 
       coverColor: generateColor(rec.title), 
       rating: rec.rating,
+      createdAt: now,
+      updatedAt: now,
     };
     setBooks([...books, newBook]);
   };

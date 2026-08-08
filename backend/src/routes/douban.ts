@@ -89,7 +89,10 @@ router.get('/cover', async (req, res, next) => {
       throw new AppError(ErrorCode.VALIDATION_ERROR, '图片URL不能为空', 400);
     }
 
-    const { data, contentType } = await getCoverImage(url);
+    const response = await fetch(url);
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const arrayBuffer = await response.arrayBuffer();
+    const data = Buffer.from(arrayBuffer);
     
     res.set('Content-Type', contentType);
     res.set('Cache-Control', 'public, max-age=86400');
@@ -108,7 +111,9 @@ router.get('/cover/base64', async (req, res, next) => {
       throw new AppError(ErrorCode.VALIDATION_ERROR, '图片URL不能为空', 400);
     }
 
-    const result = await getCoverImageBase64(url);
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    const result = Buffer.from(arrayBuffer).toString('base64');
     
     res.json({
       success: true,

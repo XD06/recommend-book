@@ -46,6 +46,8 @@ export const sampleBooks: Book[] = [
       advice: '建议先阅读第 1-4 章建立软件构建的全局视野。',
       keyChapters: ['第7章: 高质量的子程序', '第12章: 基本数据类型'],
     },
+    createdAt: '2025-06-15T00:00:00.000Z',
+    updatedAt: '2025-06-15T00:00:00.000Z',
   },
 ];
 

@@ -1,0 +1,12 @@
+﻿=== Test 1: Book Comparison ===
+  Phase: thinking
+
+=== Test 2: Reading Summary ===
+node :   FAIL: terminated
+所在位置 行:1 字符: 124
++ ... t.Encoding]::UTF8; cd backend; node test-new-features.js 2>&1 | Out-F ...
++                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (  FAIL: terminated:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  Phase: thinking

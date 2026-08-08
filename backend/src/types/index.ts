@@ -166,10 +166,28 @@ export interface CategoryContext {
 // AI 相关类型
 // ============================================================================
 
+export type ReadingLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
+
+export interface UserProfile {
+  nickname?: string;
+  readingLevel: ReadingLevel;
+  readingGoal?: string;
+  preferredCategories: string[];
+  dailyReadingTime?: number;
+  aiAnalysis?: {
+    inferredLevel: ReadingLevel;
+    readingPattern: string;
+    blindSpots: string[];
+    recommendedFocus: string;
+    lastUpdated: string;
+  };
+}
+
 export interface AIRequestContext {
   // 用户请求信息
   userRequest: string;
   userMood?: string;
+  userProfile?: UserProfile;
   
   // 可选的上下文限制
   categoryContext?: CategoryContext;  // 如果指定了分类，只在该分类下搜索
