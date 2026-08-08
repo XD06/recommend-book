@@ -39,6 +39,7 @@ import {
   READING_INSIGHTS_SYSTEM_PROMPT,
   NOTE_ORGANIZER_SYSTEM_PROMPT,
   buildNoteOrganizerUserPrompt,
+  withTools,
 } from '../prompts';
 import {
   getAllTools,
@@ -1093,7 +1094,13 @@ export async function reorganizeLibrary(
 // ============================================================================
 
 /**
- * 流式个性化推荐
+ * 流式个性化推荐 — 深度个性化模式
+ *
+ * 优化要点：
+ * 1. 使用增强版 System Prompt（含深度理解框架）
+ * 2. 通过工具说明模板统一管理工具描述
+ * 3. 构建丰富的用户上下文（书库概览 + 品味画像 + 用户画像 + 对话历史）
+ * 4. 引导 AI 优先使用分析型工具（品味画像、知识缺口）
  */
 export async function getRecommendationsStream(
   context: AIRequestContext,
@@ -1102,29 +1109,35 @@ export async function getRecommendationsStream(
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
 ): Promise<AIResponse> {
-  const systemPrompt = READING_ADVISOR_SYSTEM_PROMPT + `
+  // 使用 withTools 统一构建工具说明（包含新增的分析型工具）
+  const systemPrompt = withTools(
+    READING_ADVISOR_SYSTEM_PROMPT,
+    5,
+    `推荐时请按以下策略使用工具：
+1. 先用 get_reading_taste_profile 了解用户的阅读品味和知识结构
+2. 再用 get_reading_gaps 发现用户的知识缺口
+3. 根据品味和缺口，用 search_library / get_book_details 查找具体书籍
+4. 如需了解分类详情，用 get_category_stats
+5. 如需了解用户背景，用 get_user_profile
 
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（按关键词/分类/状态/难度）
-- get_book_details: 获取书籍详细信息（AI解读、豆瓣摘要、进度）
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-- get_user_profile: 查看用户画像
-
-请先使用工具了解用户书库，然后给出推荐。你最多可以调用 5 轮工具。`;
+这样你的推荐会更有洞察力和针对性，而不是简单的关键词匹配。`,
+  );
 
   let userPrompt = buildLibraryOverview(context.library);
+
   if (context.userProfile) {
     userPrompt += `\n\n【用户画像】\n`;
     userPrompt += `水平: ${context.userProfile.readingLevel}\n`;
     if (context.userProfile.readingGoal) userPrompt += `目标: ${context.userProfile.readingGoal}\n`;
     if (context.userProfile.preferredCategories?.length) userPrompt += `偏好: ${context.userProfile.preferredCategories.join(', ')}\n`;
+    if (context.userProfile.dailyReadingTime) userPrompt += `每日阅读时间: ${context.userProfile.dailyReadingTime} 分钟\n`;
     if (context.userProfile.aiAnalysis) {
       userPrompt += `AI分析: ${context.userProfile.aiAnalysis.readingPattern}\n`;
       userPrompt += `盲区: ${context.userProfile.aiAnalysis.blindSpots.join(', ')}\n`;
       userPrompt += `建议方向: ${context.userProfile.aiAnalysis.recommendedFocus}\n`;
     }
   }
+
   if (context.categoryContext) {
     const cc = context.categoryContext;
     userPrompt += `\n\n【分类上下文】\n`;
@@ -1133,8 +1146,17 @@ export async function getRecommendationsStream(
     if (cc.subCategories.length > 0) {
       userPrompt += `子分类: ${cc.subCategories.join(', ')}\n`;
     }
-    userPrompt += `提示：请优先在该分类范围内推荐。使用 get_category_stats 工具可以查看更多详情。\n`;
+    userPrompt += `提示：请优先在该分类范围内推荐，但如发现知识缺口可适当推荐跨分类书籍。\n`;
   }
+
+  // 对话历史（多轮推荐上下文）
+  if (context.conversationHistory && context.conversationHistory.length > 0) {
+    userPrompt += `\n【对话历史】\n`;
+    for (const msg of context.conversationHistory.slice(-4)) {
+      userPrompt += `${msg.role === 'user' ? '用户' : '助手'}：${msg.content.slice(0, 150)}\n`;
+    }
+  }
+
   userPrompt += `\n【用户请求】\n${context.userRequest}`;
   if (context.userMood) userPrompt += `\n当前心情: ${context.userMood}`;
 
@@ -1602,21 +1624,33 @@ export async function readingAssistantStream(
   signal?: AbortSignal,
   onBookUpdate?: BookUpdateCallback,
 ): Promise<string> {
-  const systemPrompt = `你是一位智能阅读管家，帮助用户管理书库、推荐书籍、分析阅读习惯。
+  const systemPrompt = withTools(
+    `你是一位智能阅读管家，帮助用户管理书库、推荐书籍、分析阅读习惯。
 
 你的能力：
 1. 搜索和查询用户书库中的书籍
 2. 获取书籍详细信息（AI解读、豆瓣评分、阅读进度等）
 3. 查看分类统计和阅读历史
-4. 了解用户画像，提供个性化建议
-5. 更新书籍阅读状态
-6. 搜索互联网获取最新书籍信息（如果可用）
+4. 分析用户阅读品味画像（get_reading_taste_profile）
+5. 识别知识缺口和盲区（get_reading_gaps）
+6. 了解用户画像，提供个性化建议
+7. 更新书籍阅读状态
+8. 搜索互联网获取最新书籍信息（如果可用）
 
 回答原则：
+- 推荐书籍前，建议先用 get_reading_taste_profile 了解用户的阅读品味
+- 发现用户知识结构问题时，用 get_reading_gaps 分析缺口
 - 优先使用书库工具查找信息，确保推荐基于用户已有藏书
 - 回答要简洁有用，避免冗长的废话
+- 给出推荐时要说明"为什么是现在读这本"
 - 如果用户问的书不在书库中，可以使用 web_search 查找
-- 支持多轮对话，记住上下文`;
+- 支持多轮对话，记住上下文`,
+    5,
+    `当用户询问"读什么书"时，请按以下步骤操作：
+1. 先用 get_reading_taste_profile 了解用户阅读品味
+2. 再用 get_reading_gaps 分析知识缺口
+3. 基于品味和缺口，给出有针对性的推荐`,
+  );
 
   let userPrompt = buildLibraryOverview(library);
   if (userProfile) {

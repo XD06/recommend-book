@@ -6,6 +6,8 @@
  * - JSON 输出格式约束
  * - 通用准确性约束
  * - Web 搜索工具说明（条件性启用）
+ * - 推荐质量约束（新增）
+ * - 深度理解框架（新增）
  */
 
 // 运行时判断是否启用 Web 搜索
@@ -22,6 +24,8 @@ const LIBRARY_TOOL_DESC = `你拥有一组工具来查询用户书库：
 - get_category_stats: 查看分类统计
 - get_reading_history: 查看已读书籍历史
 - get_user_profile: 查看用户画像
+- get_reading_taste_profile: 获取用户阅读品味画像（自动分析的阅读偏好、知识结构、阅读轨迹）
+- get_reading_gaps: 获取知识缺口分析（识别用户知识体系中的薄弱环节）
 - update_book_status: 更新书籍阅读状态和进度（写操作）`;
 
 /** Web 搜索工具说明（仅在 EXA_API_KEY 配置后启用） */
@@ -33,7 +37,7 @@ const WEB_TOOL_DESC = `
 const WEB_SEARCH_GUIDELINE = `
 ## Web 搜索使用准则
 
-1. **优先使用书库工具**: 先搜索用户书库，只有书库无法满足时才用 web_search
+1. **优先使用书库工具**: 先搜索书库，只有书库无法满足时才用 web_search
 2. **选择合适的 category**:
    - book_reviews: 查书评评分（豆瓣、Goodreads、Amazon）
    - book_recommendations: 找推荐书单（豆瓣、知乎、Goodreads）
@@ -81,7 +85,7 @@ export function withTools(
   if (isWebSearchEnabled()) {
     result += WEB_SEARCH_GUIDELINE;
   }
-  result += `\n\n你可以根据需要使用工具查询用户书库，以获得更精准的结果。如果书库概览中已有足够信息，可以直接给出回复。如需使用工具，最多 ${maxRounds} 轮即可。`;
+  result += `\n\n你可以根据需要使用工具查询用户书库，以获得更精准的结果。建议优先使用 get_reading_taste_profile 和 get_reading_gaps 了解用户的阅读品味和知识缺口，这样你的推荐会更加精准和有洞察力。如果书库概览中已有足够信息，可以直接给出回复。如需使用工具，最多 ${maxRounds} 轮即可。`;
   return result;
 }
 
@@ -100,6 +104,33 @@ export const ACCURACY_CONSTRAINTS = `## 准确性要求
 5. **外部推荐可信度**: 每本外部推荐的书籍请标注 confidence 字段（"high"表示非常有把握确实存在，"medium"表示可能存在但不确定细节，"low"表示不太确定）`;
 
 // ============================================================================
+// 深度理解框架 — 所有推荐场景共享的分析维度
+// ============================================================================
+
+export const DEEP_UNDERSTANDING_FRAMEWORK = `## 深度理解框架
+
+在给出任何推荐之前，请先从以下维度理解用户：
+
+### 阅读品味推断
+从用户书库的数据中推断：
+- **知识结构**：用户在哪些领域有积累？深度如何？
+- **阅读偏好**：偏理论还是实践？偏入门还是挑战？
+- **阅读节奏**：是快速浏览型还是深度精读型？
+- **潜在兴趣**：从已读书籍中能推断出哪些未明说的兴趣？
+
+### 阅读轨迹分析
+- **从哪里来**：最早读的书 → 反映起点和初始动机
+- **到哪里去**：最近读的书 → 反映当前方向
+- **在哪里停**：正在读但进度缓慢的书 → 反映可能的困难
+- **在哪里跳**：频繁切换分类 → 可能缺乏深度或正在探索
+
+### 知识缺口识别
+- 同一分类只有入门书，缺少进阶 → 深度缺口
+- 只读一个领域，缺少跨学科 → 广度缺口
+- 读了理论，缺少实践类 → 应用缺口
+- 读了旧版，缺少新版/新出版物 → 时效缺口`;
+
+// ============================================================================
 // Few-Shot 示例库
 // ============================================================================
 
@@ -113,10 +144,14 @@ export const READING_ADVISOR_FEW_SHOT = `## 示例
 输出：
 {
   "analysis": "你对系统编程感兴趣，想学 Rust 是个好选择。你书库中已有《Rust 程序设计语言》，这是最权威的入门资料。同时你的 CSAPP 基础会帮助你理解底层概念。",
+  "readingInsight": "你的阅读轨迹从 C 到 CSAPP 再到 Rust，体现了对系统编程安全性的逐步关注，这是很好的深入路径。",
+  "recommendationStrategy": "优先利用书库中已有的 Rust 入门书，外部推荐补充进阶实践类书籍",
   "libraryMatches": [
     {
       "bookId": "实际书库中的ID",
       "reason": "Rust 官方推荐入门书，涵盖所有权、生命周期等核心概念，适合有 C 语言基础的开发者",
+      "timing": "你刚读完 CSAPP 的内存管理部分，正好可以对比 Rust 的所有权模型",
+      "prerequisite": "C 语言基础（已满足）",
       "relevanceScore": 0.95
     }
   ],
@@ -125,7 +160,7 @@ export const READING_ADVISOR_FEW_SHOT = `## 示例
       "title": "Rust 权威指南",
       "author": "Steve Klabnik, Carol Nichols",
       "publisher": "人民邮电出版社",
-      "reason": "比官方书更详细的中文版指南，适合系统学习",
+      "reason": "比官方书更详细的中文版指南，适合系统学习。如果觉得太厚，可以先看《Rust 程序设计语言》在线版作为速览",
       "level": "Basic",
       "category": "计算机科学",
       "subcategory": "编程语言",
@@ -133,27 +168,4 @@ export const READING_ADVISOR_FEW_SHOT = `## 示例
     }
   ],
   "suggestedQuestions": ["我需要先复习 C 语言吗？", "学完 Rust 之后我该怎么进阶？"]
-}
-
-### 示例 2
-
-用户："有没有比《算法导论》更友好的入门书？"
-
-输出：
-{
-  "analysis": "《算法导论》确实偏学术，对初学者不太友好。推荐先从图文并茂的入门书开始，建立直觉后再挑战 CLRS。",
-  "libraryMatches": [],
-  "externalMatches": [
-    {
-      "title": "算法图解",
-      "author": "Aditya Bhargava",
-      "publisher": "人民邮电出版社",
-      "reason": "用图解方式讲解算法，篇幅短、门槛低，非常适合作为算法导论的先导阅读",
-      "level": "Basic",
-      "category": "计算机科学",
-      "subcategory": "算法",
-      "confidence": "high"
-    }
-  ],
-  "suggestedQuestions": ["读完算法图解后我该怎么进阶？"]
 }`;

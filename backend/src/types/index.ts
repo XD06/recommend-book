@@ -207,15 +207,19 @@ export interface ChatMessage {
 
 export interface AIResponse {
   analysis: string;
+  readingInsight?: string;             // 阅读洞察（基于书库的深度观察）
+  recommendationStrategy?: string;     // 推荐策略说明
   libraryMatches: LibraryMatch[];
   externalMatches: ExternalRecommendation[];
-  suggestedQuestions?: string[];  // 建议的后续问题
+  suggestedQuestions?: string[];       // 建议的后续问题
 }
 
 export interface LibraryMatch {
   bookId: string;
   reason: string;
-  relevanceScore: number;  // 0-1 相关度评分
+  relevanceScore: number;      // 0-1 相关度评分
+  timing?: string;             // 为什么是现在读
+  prerequisite?: string | null; // 前置阅读要求
 }
 
 export interface ExternalRecommendation {
@@ -228,6 +232,7 @@ export interface ExternalRecommendation {
   subcategory?: string;
   rating?: number;
   doubanId?: string;
+  confidence?: 'high' | 'medium' | 'low';  // 推荐可信度
 }
 
 // ============================================================================

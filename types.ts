@@ -174,13 +174,19 @@ export interface Recommendation {
   category?: string;
   subcategory?: string;
   rating?: number;
+  confidence?: 'high' | 'medium' | 'low';
 }
 
 export interface AdvisorResponse {
   analysis: string;
+  readingInsight?: string;
+  recommendationStrategy?: string;
   libraryMatches: {
     bookId: string;
     reason: string;
+    timing?: string;
+    prerequisite?: string | null;
+    relevanceScore?: number;
   }[];
   externalMatches: Recommendation[];
 }

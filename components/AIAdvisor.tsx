@@ -11,7 +11,7 @@ const fallbackResponse: AdvisorResponse = {
   externalMatches: [],
 };
 import {
-  Sparkle, PaperPlaneTilt, Plus, Star, Robot, Stack,
+  Sparkle, PaperPlaneTilt, Plus, Star, Robot, Stack, Lightbulb, Clock, Eye, CheckCircle,
 } from '@phosphor-icons/react';
 
 interface AIAdvisorProps {
@@ -145,6 +145,18 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
               <div className="flex-1 min-w-0">
                 <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">顾问洞察</h4>
                 <p className="text-zinc-700 leading-relaxed text-[15px]">{result.analysis}</p>
+                {result.readingInsight && (
+                  <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-50/60 px-3 py-2">
+                    <Lightbulb size={16} className="text-amber-500 shrink-0 mt-0.5" weight="fill" />
+                    <p className="text-xs text-amber-800 leading-relaxed">{result.readingInsight}</p>
+                  </div>
+                )}
+                {result.recommendationStrategy && (
+                  <div className="mt-2 flex items-start gap-2">
+                    <Eye size={14} className="text-zinc-400 shrink-0 mt-0.5" />
+                    <p className="text-xs text-zinc-500 leading-relaxed">推荐策略：{result.recommendationStrategy}</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -195,6 +207,12 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
                           <h4 className="font-semibold text-sm text-zinc-900 truncate group-hover:text-accent-700 transition-colors">{book.title}</h4>
                           <p className="text-xs text-zinc-400 mb-2">{book.author}</p>
                           <p className="text-xs text-zinc-600 leading-relaxed line-clamp-2">{match.reason}</p>
+                          {match.timing && (
+                            <div className="mt-1.5 flex items-start gap-1">
+                              <Clock size={11} className="text-emerald-500 shrink-0 mt-0.5" />
+                              <p className="text-[11px] text-emerald-600 leading-relaxed line-clamp-1">{match.timing}</p>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -226,7 +244,22 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
                       )}
                       {rec.category && <span className="badge bg-zinc-100 text-zinc-500">{rec.category}</span>}
                     </div>
-                    <p className="text-xs text-zinc-600 leading-relaxed mb-4 flex-1 border-l-2 border-zinc-200 pl-3">{rec.reason}</p>
+                    <p className="text-xs text-zinc-600 leading-relaxed mb-2 flex-1 border-l-2 border-zinc-200 pl-3">{rec.reason}</p>
+                    {/* Confidence indicator */}
+                    {rec.confidence && (
+                      <div className="flex items-center gap-1 mb-3">
+                        <CheckCircle size={12} className={
+                          rec.confidence === 'high' ? 'text-emerald-500'
+                          : rec.confidence === 'medium' ? 'text-amber-500'
+                          : 'text-zinc-400'
+                        } />
+                        <span className="text-[10px] text-zinc-400">
+                          {rec.confidence === 'high' ? '高可信度'
+                          : rec.confidence === 'medium' ? '中等可信度'
+                          : '可信度较低'}
+                        </span>
+                      </div>
+                    )}
                     <Button size="sm" variant="outline" onClick={() => onAddBook(rec)} className="w-full">
                       <Plus size={14} /> 加入书库
                     </Button>
