@@ -34,11 +34,14 @@ import {
   BOOK_COMPARISON_SYSTEM_PROMPT,
   buildBookComparisonUserPrompt,
   buildBookQAContext,
+  BOOK_QA_SYSTEM_PROMPT,
   READING_SUMMARY_SYSTEM_PROMPT,
   buildReadingSummaryUserPrompt,
   READING_INSIGHTS_SYSTEM_PROMPT,
   NOTE_ORGANIZER_SYSTEM_PROMPT,
   buildNoteOrganizerUserPrompt,
+  READING_PATH_SYSTEM_PROMPT,
+  PROFILE_ANALYSIS_SYSTEM_PROMPT,
   withTools,
 } from '../prompts';
 import {
@@ -822,9 +825,68 @@ function parseAIJSON<T>(content: string | null): T {
         // 修复仍然失败
       }
     }
+    // 4. 最终降级：尝试提取已知字段，返回部分结果
+    const partial = extractPartialJSON<T>(clean);
+    if (partial) {
+      console.warn('[AI] JSON 降级提取部分字段成功');
+      return partial;
+    }
     console.error('JSON Parse Error:', e);
     console.error('Cleaned Content (first 500 chars):', clean.substring(0, 500));
     throw new Error('AI 返回的 JSON 格式有语法错误');
+  }
+}
+
+/**
+ * 从损坏的 JSON 中尝试提取已知字段（最终降级方案）
+ *
+ * 当 JSON.parse 和 repairJSON 都失败时，用正则提取常见字段，
+ * 返回部分结果而不是完全失败。
+ */
+function extractPartialJSON<T>(content: string): T | null {
+  try {
+    const result: Record<string, any> = {};
+
+    // 提取字符串字段: "key": "value"
+    const stringFieldRegex = /"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+    let match: RegExpExecArray | null;
+    while ((match = stringFieldRegex.exec(content)) !== null) {
+      const key = match[1];
+      const value = match[2].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+      if (!result[key]) {
+        result[key] = value;
+      }
+    }
+
+    // 提取数组字段: "key": ["item1", "item2", ...]
+    const arrayFieldRegex = /"(\w+)"\s*:\s*\[([\s\S]*?)\]/g;
+    while ((match = arrayFieldRegex.exec(content)) !== null) {
+      const key = match[1];
+      const arrayContent = match[2];
+      const items = arrayContent.match(/"((?:[^"\\]|\\.)*)"/g);
+      if (items) {
+        result[key] = items.map(item => item.slice(1, -1).replace(/\\n/g, '\n').replace(/\\"/g, '"'));
+      }
+    }
+
+    // 提取数字字段: "key": 123
+    const numberFieldRegex = /"(\w+)"\s*:\s*(\d+(?:\.\d+)?)/g;
+    while ((match = numberFieldRegex.exec(content)) !== null) {
+      const key = match[1];
+      if (!result[key]) {
+        result[key] = parseFloat(match[2]);
+      }
+    }
+
+    // 如果至少提取到了一个字段，返回部分结果
+    if (Object.keys(result).length > 0) {
+      console.warn(`[AI] 部分字段提取: ${Object.keys(result).join(', ')}`);
+      return result as T;
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -1108,6 +1170,7 @@ export async function getRecommendationsStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<AIResponse> {
   // 使用 withTools 统一构建工具说明（包含新增的分析型工具）
   const systemPrompt = withTools(
@@ -1163,7 +1226,7 @@ export async function getRecommendationsStream(
   const content = await callAgentStream(
     systemPrompt, userPrompt, context.library, onChunk, 0.7, true,
     onPhase, context.conversationHistory?.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    context.userProfile, onToolCall, signal
+    context.userProfile, onToolCall, signal, undefined, onReasoning
   );
   return parseAIJSON<AIResponse>(content);
 }
@@ -1183,17 +1246,17 @@ export async function generateInsightStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<AIInsight> {
   if (library && library.length > 0) {
-    const systemPrompt = INSIGHT_GENERATOR_SYSTEM_PROMPT + `
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（按关键词/分类/标签/状态/难度）
-- get_book_details: 获取书籍详细信息
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-
-请先使用工具了解用户书库中是否有相关书籍（同分类、同作者、同主题），然后在阅读建议中提及关联书籍。你最多可以调用 3 轮工具。`;
+    const systemPrompt = withTools(
+      INSIGHT_GENERATOR_SYSTEM_PROMPT,
+      3,
+      `生成解读时请按以下策略使用工具：
+1. 先用 search_library 查找同分类、同作者、同主题的书
+2. 如需了解某本书的详情，用 get_book_details
+3. 在阅读建议中提及用户书库中的相关书籍，建立知识连接`,
+    );
 
     let userPrompt = `请为以下书籍生成深度解读：\n\n`;
     userPrompt += `书名: 《${title}》\n作者: ${author}\n难度: ${level}\n`;
@@ -1217,7 +1280,7 @@ export async function generateInsightStream(
 
     const content = await callAgentStream(
       systemPrompt, userPrompt, library, onChunk || (() => {}), 0.4, true,
-      onPhase, undefined, undefined, onToolCall, signal
+      onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
     );
     return parseAIJSON<AIInsight>(content);
   }
@@ -1239,39 +1302,16 @@ export async function generateReadingPathStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<ReadingPathResponse> {
-  const systemPrompt = `你是一个高级课程设计师，擅长规划学习路径。
-
-请根据书籍的难度、内容依赖关系、用户的阅读状态，规划最佳阅读顺序。
-
-排序原则：
-1. 难度递进：Basic -> Advanced -> Expert
-2. 内容依赖：基础理论在前，应用实践在后
-3. 状态优先：正在阅读的书优先，未读的书按逻辑排序
-4. 用户目标：如果用户有特定目标，优先满足
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（按关键词/分类/标签/状态/难度）
-- get_book_details: 获取书籍详细信息（AI解读、豆瓣摘要、标签等）
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-
-请先使用工具获取书籍的详细信息（特别是AI解读摘要和核心章节），以便更好地判断内容依赖关系。你最多可以调用 3 轮工具。
-
-输出 JSON 格式：
-{
-  "sortedBookIds": ["id1", "id2", ...],
-  "reasoning": "详细的规划理由",
-  "estimatedTotalDays": 90,
-  "pathStages": [
-    {
-      "stage": 1,
-      "bookIds": ["id1"],
-      "theme": "该阶段主题",
-      "description": "阶段描述"
-    }
-  ]
-}`;
+  const systemPrompt = withTools(
+    READING_PATH_SYSTEM_PROMPT,
+    3,
+    `规划路径时请按以下策略使用工具：
+1. 用 get_book_details 获取书籍的 AI 解读和核心章节，判断内容依赖关系
+2. 如需了解分类全貌，用 get_category_stats
+3. 如需了解用户已读书籍，用 get_reading_history`,
+  );
 
   let userPrompt = `请为以下书籍规划阅读路径。\n\n`;
   userPrompt += `领域: ${category}${subcategory ? ` > ${subcategory}` : ''}\n`;
@@ -1281,7 +1321,7 @@ export async function generateReadingPathStream(
 
   const content = await callAgentStream(
     systemPrompt, userPrompt, books, onChunk || (() => {}), 0.3, true,
-    onPhase, undefined, undefined, onToolCall, signal
+    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
   );
   return parseAIJSON<ReadingPathResponse>(content);
 }
@@ -1305,6 +1345,7 @@ export async function chatWithBookStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   onBookUpdate?: BookUpdateCallback,
+  onReasoning?: (text: string) => void,
 ): Promise<string> {
   if (library && library.length > 0) {
     const messages = buildBookQAContext(
@@ -1312,18 +1353,13 @@ export async function chatWithBookStream(
       bookContext.level, bookContext.aiInsight, bookContext.doubanData, bookContext.readingProgress,
       conversationHistory
     );
-    const systemContent = messages[0]?.content || '';
-    const systemPrompt = systemContent + `
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（按关键词/分类/状态/难度）
-- get_book_details: 获取书籍详细信息
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-- get_user_profile: 查看用户画像
-
-当用户问题涉及书库中的其他书籍、同类书籍对比、延伸阅读推荐时，请使用工具查找相关信息。
-你最多可以调用 3 轮工具。如果问题只关于当前书籍，不需要调用工具。`;
+    const systemContent = messages[0]?.content || BOOK_QA_SYSTEM_PROMPT;
+    const systemPrompt = withTools(
+      systemContent,
+      3,
+      `当用户问题涉及书库中的其他书籍、同类书籍对比、延伸阅读推荐时，请使用工具查找相关信息。
+如果问题只关于当前书籍，不需要调用工具。`,
+    );
 
     let userPrompt = '';
     if (conversationHistory && conversationHistory.length > 0) {
@@ -1338,7 +1374,7 @@ export async function chatWithBookStream(
 
     const content = await callAgentStream(
       systemPrompt, userPrompt, library, onChunk, 0.7, false,
-      onPhase, undefined, undefined, onToolCall, signal, onBookUpdate
+      onPhase, undefined, undefined, onToolCall, signal, onBookUpdate, onReasoning
     );
     return content;
   }
@@ -1370,16 +1406,17 @@ export async function generateReadingInsightsStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = READING_INSIGHTS_SYSTEM_PROMPT + `
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（按关键词/分类/状态/难度）
-- get_book_details: 获取书籍详细信息
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-
-请先使用工具了解用户的阅读情况，然后生成洞察。你最多可以调用 5 轮工具。`;
+  const systemPrompt = withTools(
+    READING_INSIGHTS_SYSTEM_PROMPT,
+    5,
+    `生成洞察时请按以下策略使用工具：
+1. 先用 get_reading_taste_profile 了解用户阅读品味
+2. 再用 get_reading_gaps 分析知识缺口
+3. 根据品味和缺口生成有洞察力的分析
+4. 如需具体书籍信息，用 get_book_details / get_reading_history`,
+  );
 
   let userPrompt = `请根据以下阅读数据生成个性化洞察：\n\n`;
   userPrompt += `藏书：${data.totalBooks} 本（在读 ${data.readingCount}，已读 ${data.finishedCount}，未读 ${data.unreadCount}）\n`;
@@ -1397,7 +1434,7 @@ export async function generateReadingInsightsStream(
 
   const content = await callAgentStream(
     systemPrompt, userPrompt, library, onChunk, 0.6, true,
-    onPhase, undefined, undefined, onToolCall, signal
+    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
   );
   return parseAIJSON(content);
 }
@@ -1424,24 +1461,17 @@ export async function analyzeUserProfileStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = `你是一位阅读分析专家，擅长根据用户的阅读数据推断其阅读水平、习惯和知识结构。
-
-请分析用户的阅读数据，输出 JSON：
-{
-  "inferredLevel": "beginner | intermediate | advanced | expert",
-  "readingPattern": "阅读模式描述（2-3句话）",
-  "blindSpots": ["知识盲区1", "知识盲区2"],
-  "recommendedFocus": "建议关注的方向"
-}
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（按关键词/分类/状态/难度）
-- get_book_details: 获取书籍详细信息
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-
-请先使用工具了解用户的阅读情况，然后生成分析。你最多可以调用 5 轮工具。`;
+  const systemPrompt = withTools(
+    PROFILE_ANALYSIS_SYSTEM_PROMPT,
+    5,
+    `分析用户画像时请按以下策略使用工具：
+1. 先用 get_reading_taste_profile 了解用户阅读品味
+2. 再用 get_reading_gaps 分析知识缺口
+3. 结合品味和缺口，给出更精准的水平推断和建议
+4. 如需具体书籍信息，用 get_book_details / get_reading_history`,
+  );
 
   let userPrompt = `请分析以下用户的阅读数据：\n\n`;
   userPrompt += `藏书：${data.totalBooks} 本（在读 ${data.readingCount}，已读 ${data.finishedCount}，未读 ${data.unreadCount}）\n`;
@@ -1466,7 +1496,7 @@ export async function analyzeUserProfileStream(
 
   const content = await callAgentStream(
     systemPrompt, userPrompt, library, onChunk, 0.5, true,
-    onPhase, undefined, undefined, onToolCall, signal
+    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
   );
   return parseAIJSON(content);
 }
@@ -1481,23 +1511,23 @@ export async function compareBooksStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = BOOK_COMPARISON_SYSTEM_PROMPT + `
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（按关键词/分类/状态/难度）
-- get_book_details: 获取书籍详细信息
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-
-请先使用工具了解这些书籍在用户书库中的情况和相关书籍，然后生成对比分析。你最多可以调用 3 轮工具。`;
+  const systemPrompt = withTools(
+    BOOK_COMPARISON_SYSTEM_PROMPT,
+    3,
+    `对比书籍时请按以下策略使用工具：
+1. 先用 get_book_details 获取要对比的书籍的详细信息
+2. 如需了解用户书库中的相关书籍，用 search_library
+3. 如需了解用户阅读品味，用 get_reading_taste_profile`,
+  );
 
   let userPrompt = buildBookComparisonUserPrompt(books);
   userPrompt += `\n${buildLibraryOverview(library)}`;
 
   const content = await callAgentStream(
     systemPrompt, userPrompt, library, onChunk, 0.4, true,
-    onPhase, undefined, undefined, onToolCall, signal
+    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
   );
   return parseAIJSON(content);
 }
@@ -1520,16 +1550,16 @@ export async function generateReadingSummaryStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = READING_SUMMARY_SYSTEM_PROMPT + `
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（找相关延伸阅读）
-- get_book_details: 获取书籍详细信息
-- get_category_stats: 查看分类统计
-- get_reading_history: 查看已读书籍历史
-
-请先使用工具查找用户书库中与这本书相关的书籍（同分类、同作者、同主题），然后在行动建议中推荐相关延伸阅读。你最多可以调用 3 轮工具。`;
+  const systemPrompt = withTools(
+    READING_SUMMARY_SYSTEM_PROMPT,
+    3,
+    `生成总结时请按以下策略使用工具：
+1. 用 search_library 查找用户书库中与这本书相关的书籍（同分类、同作者、同主题）
+2. 如需了解书籍详情，用 get_book_details
+3. 在行动建议中推荐用户书库中的相关延伸阅读`,
+  );
 
   const relatedBooks = library
     .filter(b => b.id !== data.title &&
@@ -1544,7 +1574,7 @@ export async function generateReadingSummaryStream(
 
   const content = await callAgentStream(
     systemPrompt, userPrompt, library, onChunk, 0.5, true,
-    onPhase, undefined, data.userProfile as any, onToolCall, signal
+    onPhase, undefined, data.userProfile as any, onToolCall, signal, undefined, onReasoning
   );
   return parseAIJSON(content);
 }
@@ -1582,14 +1612,13 @@ export async function organizeNotesStream(
   onPhase?: (phase: 'thinking' | 'generating') => void,
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<NoteOrganizerResult> {
-  const systemPrompt = NOTE_ORGANIZER_SYSTEM_PROMPT + `
-
-你拥有一组工具来查询用户书库：
-- search_library: 搜索书库（查找相关书籍）
-- get_book_details: 获取书籍详细信息
-
-如果笔记涉及的书籍在用户书库中，可以使用工具获取更多上下文信息来辅助整理。你最多可以调用 2 轮工具。`;
+  const systemPrompt = withTools(
+    NOTE_ORGANIZER_SYSTEM_PROMPT,
+    2,
+    `整理笔记时如需了解书籍详情或查找相关书籍，可以使用工具。如果笔记内容清晰，不需要调用工具。`,
+  );
 
   let userPrompt = buildNoteOrganizerUserPrompt(data);
   if (library && library.length > 0) {
@@ -1598,7 +1627,7 @@ export async function organizeNotesStream(
 
   const content = await callAgentStream(
     systemPrompt, userPrompt, library, onChunk, 0.4, true,
-    onPhase, undefined, undefined, onToolCall, signal
+    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
   );
   return parseAIJSON<NoteOrganizerResult>(content);
 }

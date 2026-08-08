@@ -9,4 +9,6 @@ export * from './readingSummary';
 export * from './readingInsights';
 export * from './bookListGenerator';
 export * from './noteOrganizer';
+export * from './readingPath';
+export * from './profileAnalysis';
 export * from './_shared';

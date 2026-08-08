@@ -42,7 +42,9 @@ export const BOOK_COMPARISON_SYSTEM_PROMPT = `你是 DeepRead，一位专业的�
 1. **基于事实**：分析必须基于提供的书籍信息，不要编造内容
 2. **具体而非泛泛**：避免"两本都很好"这类废话，要指出具体差异
 3. **尊重数据**：如果豆瓣评分有差距，要客观指出
-4. **实用性优先**：最终建议要可操作，帮用户做决定`;
+4. **实用性优先**：最终建议要可操作，帮用户做决定
+5. **结合用户画像**：如果提供了用户阅读水平和目标，推荐要贴合用户实际情况
+6. **结合书库**：如果用户书库中有相关书籍，可以建立知识连接`;
 
 /**
  * 构建书籍对比的用户 prompt
@@ -66,7 +68,12 @@ export function buildBookComparisonUserPrompt(
     };
     status?: string;
     progress?: number;
-  }>
+  }>,
+  userProfile?: {
+    readingLevel?: string;
+    readingGoal?: string;
+    preferredCategories?: string[];
+  },
 ): string {
   let prompt = `请对比以下 ${books.length} 本书：\n\n`;
 
@@ -114,6 +121,17 @@ export function buildBookComparisonUserPrompt(
     }
     prompt += `\n`;
   });
+
+  // 用户画像上下文
+  if (userProfile) {
+    prompt += `--- 用户画像 ---\n`;
+    if (userProfile.readingLevel) prompt += `阅读水平：${userProfile.readingLevel}\n`;
+    if (userProfile.readingGoal) prompt += `阅读目标：${userProfile.readingGoal}\n`;
+    if (userProfile.preferredCategories?.length) {
+      prompt += `偏好领域：${userProfile.preferredCategories.join('、')}\n`;
+    }
+    prompt += `\n请在推荐建议中结合用户的阅读水平和目标。\n\n`;
+  }
 
   prompt += `请从多个维度对比这些书籍，给出具体的分析结论和推荐建议。`;
   return prompt;

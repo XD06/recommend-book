@@ -262,6 +262,7 @@ router.post('/recommend/stream', validate(recommendSchema), async (req, res) => 
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -286,6 +287,7 @@ router.post('/insight/stream', validate(insightSchema), async (req, res) => {
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -308,6 +310,7 @@ router.post('/reading-path/stream', validate(pathSchema), async (req, res) => {
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -365,6 +368,8 @@ router.post('/book-qa/stream', validate(bookQASchema), async (req, res) => {
       signal, library,
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
+      undefined,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: fullText });
     res.end();
@@ -404,6 +409,7 @@ router.post('/reading-insights/stream', validate(insightsSchema), async (req, re
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -448,6 +454,7 @@ router.post('/profile/stream', validate(profileSchema), async (req, res) => {
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -478,6 +485,7 @@ router.post('/compare-books/stream', validate(compareBooksSchema), async (req, r
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -530,6 +538,7 @@ router.post('/reading-summary/stream', validate(readingSummarySchema), async (re
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -571,6 +580,7 @@ router.post('/notes/stream', validate(notesOrganizeSchema), async (req, res) => 
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
+      (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
