@@ -99,6 +99,11 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
   const [showIngestion, setShowIngestion] = useState(false);
   const [isReorganizing, setIsReorganizing] = useState(false);
 
+  // 组件挂载时从后端加载书库数据
+  useEffect(() => {
+    loadFromAPI();
+  }, [loadFromAPI]);
+
   const categories = React.useMemo(() => {
     const groups: Record<string, number> = {};
     books.forEach((b) => { groups[b.category] = (groups[b.category] || 0) + 1; });
