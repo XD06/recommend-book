@@ -27,15 +27,48 @@ function useBookLibrary() {
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isInitialLoad = useRef(true);
 
-  // 初始加载
+  // 初始加载（含一次性 localStorage → SQLite 迁移）
   const loadFromAPI = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
+      // 1. 先尝试从后端加载
       const [fetchedBooks, fetchedMeta] = await Promise.all([
         fetchBooks(),
         fetchCategoryMeta(),
       ]);
+
+      // 2. 一次性迁移：如果后端书库为空，但 localStorage 有旧数据，自动上传
+      const MIGRATED_KEY = 'deepread_migrated_to_db';
+      if (fetchedBooks.length === 0 && !localStorage.getItem(MIGRATED_KEY)) {
+        try {
+          const oldBooksRaw = localStorage.getItem('deepread_library');
+          const oldMetaRaw = localStorage.getItem('deepread_category_meta');
+          if (oldBooksRaw) {
+            const oldBooks = JSON.parse(oldBooksRaw) as Book[];
+            if (oldBooks.length > 0) {
+              console.log(`[迁移] 检测到 localStorage 中 ${oldBooks.length} 本旧书，正在迁移到数据库…`);
+              const savedBooks = await saveBooks(oldBooks);
+              setBooksState(savedBooks);
+              if (oldMetaRaw) {
+                const oldMeta = JSON.parse(oldMetaRaw);
+                setCategoryMetaState(oldMeta);
+                await saveCategoryMeta(oldMeta);
+              }
+              console.log('[迁移] 迁移完成！');
+              // 标记已迁移，不再重复执行
+              localStorage.setItem(MIGRATED_KEY, 'true');
+              setLoading(false);
+              return;
+            }
+          }
+        } catch (migrateErr: any) {
+          console.error('[迁移] 失败:', migrateErr.message);
+        }
+        // 即使没有旧数据，也标记为已迁移
+        localStorage.setItem(MIGRATED_KEY, 'true');
+      }
+
       setBooksState(fetchedBooks);
       setCategoryMetaState(fetchedMeta);
     } catch (err: any) {
