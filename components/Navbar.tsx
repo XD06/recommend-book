@@ -8,6 +8,7 @@ import {
   Plus,
   MagnifyingGlass,
   Command,
+  SignOut,
 } from '@phosphor-icons/react';
 import { Button } from './Button';
 
@@ -15,6 +16,8 @@ interface NavbarProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   onImportClick: () => void;
+  user?: { username: string; email: string };
+  onLogout?: () => void;
 }
 
 const navItems = [
@@ -28,6 +31,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
   onTabChange,
   onImportClick,
+  user,
+  onLogout,
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -148,6 +153,20 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 添加书籍
               </Button>
+
+              {/* User Menu */}
+              {user && (
+                <div className="flex items-center gap-2">
+                  <span className="hidden sm:block text-sm text-zinc-600 font-medium">{user.username}</span>
+                  <button
+                    onClick={onLogout}
+                    title="退出登录"
+                    className="p-2 text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 rounded-lg transition-colors"
+                  >
+                    <SignOut className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
 
               {/* Mobile Menu Button */}
               <button

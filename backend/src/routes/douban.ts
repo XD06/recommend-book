@@ -14,8 +14,12 @@ import {
   preloadCache,
 } from '../services/doubanService';
 import { AppError, ErrorCode } from '../types';
+import { requireAuth } from '../middleware/auth';
 
 const router = Router();
+
+// 豆瓣代理需要登录
+router.use(requireAuth);
 
 // 搜索书籍
 router.get('/search', async (req, res, next) => {

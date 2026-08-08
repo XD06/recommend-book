@@ -5,8 +5,7 @@
  */
 
 import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation, AdvisorResponse } from "../types";
-
-const API_BASE = 'http://localhost:3001/api';
+import { API_BASE, authHeader } from "./authService";
 
 // ============================================================================
 // SSE 流式辅助类型 & 通用解析器
@@ -140,7 +139,7 @@ async function fetchSSEStream(
 ): Promise<any> {
   const response = await fetch(`${API_BASE}/ai/${endpoint}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify(body),
     signal,
   });
@@ -376,7 +375,7 @@ export async function analyzeBookBatch(
 ): Promise<Partial<Book>[]> {
   const response = await fetch(`${API_BASE}/ai/classify`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({ titles, existingCategories }),
   });
 
@@ -398,7 +397,7 @@ export async function getPersonalizedRecommendations(
 ): Promise<AdvisorResponse> {
   const response = await fetch(`${API_BASE}/ai/recommend`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({
       library,
       context,
@@ -436,7 +435,7 @@ export async function generateBookInsight(
 ): Promise<AIInsight> {
   const response = await fetch(`${API_BASE}/ai/insight`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({ 
       title, 
       author, 
@@ -469,7 +468,7 @@ export async function generateReadingPath(
 ): Promise<ReadingPathResponse> {
   const response = await fetch(`${API_BASE}/ai/reading-path`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({ books, category, subcategory, customRequirements }),
   });
 
@@ -489,7 +488,7 @@ export async function reorganizeLibrary(
 ): Promise<Record<string, { category: string; subcategory: string; tags?: string[] }>> {
   const response = await fetch(`${API_BASE}/ai/reorganize`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({ books }),
   });
 
@@ -505,7 +504,9 @@ export async function reorganizeLibrary(
  * 搜索豆瓣书籍（调用后端 API）
  */
 export async function searchDoubanBooks(query: string): Promise<any[]> {
-  const response = await fetch(`${API_BASE}/douban/search?q=${encodeURIComponent(query)}`);
+  const response = await fetch(`${API_BASE}/douban/search?q=${encodeURIComponent(query)}`, {
+    headers: authHeader(),
+  });
 
   if (!response.ok) {
     const error = await response.json();
@@ -526,7 +527,7 @@ export async function searchDoubanBooks(query: string): Promise<any[]> {
 export async function findBookByTitle(title: string): Promise<{ book: any; comments: any[] } | null> {
   const response = await fetch(`${API_BASE}/douban/find`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({ title }),
   });
 

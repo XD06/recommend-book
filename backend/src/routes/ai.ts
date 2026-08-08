@@ -31,8 +31,12 @@ import {
   readingAssistantStream,
 } from '../services/aiService';
 import { AppError, ErrorCode } from '../types';
+import { requireAuth } from '../middleware/auth';
 
 const router = Router();
+
+// 所有 AI 路由都需要登录
+router.use(requireAuth);
 
 // ============================================================================
 // SSE 辅助函数 — 确保真正的流式输出 + 客户端断开检测

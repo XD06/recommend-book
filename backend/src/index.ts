@@ -14,9 +14,13 @@ import dotenv from 'dotenv';
 
 import routes from './routes';
 import { AppError } from './types';
+import { initDatabase } from './db/database';
 
 // 加载环境变量
 dotenv.config();
+
+// 初始化 SQLite 数据库（零安装，文件型）
+initDatabase();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -25,9 +29,12 @@ const PORT = process.env.PORT || 3001;
 app.use(helmet());
 
 // CORS
+const allowedOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
+  : ['http://localhost:5173', 'http://localhost:3000'];
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://your-frontend-domain.com'] 
+  origin: process.env.NODE_ENV === 'production'
+    ? (allowedOrigins.length > 0 ? allowedOrigins : true)
     : ['http://localhost:5173', 'http://localhost:3000'],
   credentials: true,
 }));
