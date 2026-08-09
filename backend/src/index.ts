@@ -39,11 +39,24 @@ app.use(cors({
   credentials: true,
 }));
 
+// 即时请求日志（morgan 只在响应完成后输出，SSE 流式请求需要即时日志）
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.path.startsWith('/api/ai/')) {
+    console.log(`[AI] ← ${req.method} ${req.path}  @ ${new Date().toLocaleTimeString()}`);
+  }
+  next();
+});
+
 // 请求日志
 app.use(morgan('dev'));
 
-// 压缩响应
-app.use(compression());
+// 压缩响应（跳过 SSE 流式端点）
+app.use(compression({
+  filter: (req, res) => {
+    if (req.path.includes('/stream')) return false;
+    return compression.filter(req, res);
+  },
+}));
 
 // 限流
 const limiter = rateLimit({
@@ -54,7 +67,16 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // 解析 JSON
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+
+// body 解析完成后的日志（用于诊断 body 解析是否卡住）
+app.use((req, res, next) => {
+  if (req.method === 'POST' && req.path.startsWith('/api/ai/')) {
+    const bodySize = req.body ? JSON.stringify(req.body).length : 0;
+    console.log(`[AI] ✓ body parsed: ${(bodySize / 1024).toFixed(1)}KB, library=${req.body?.library?.length || 0} books`);
+  }
+  next();
+});
 
 // 路由
 app.use('/api', routes);
@@ -107,8 +129,10 @@ app.listen(PORT, () => {
   `);
   
   // 检查必要的环境变量
-  if (!process.env.DEEPSEEK_API_KEY) {
-    console.warn('⚠️  Warning: DEEPSEEK_API_KEY not set. AI features will not work.');
+  if (!process.env.LITELLM_BASE_URL && !process.env.DEEPSEEK_API_KEY) {
+    console.warn('⚠️  Warning: Neither LITELLM_BASE_URL nor DEEPSEEK_API_KEY set. AI features will not work.');
+  } else if (process.env.LITELLM_BASE_URL) {
+    console.log('✓ LiteLLM proxy configured:', process.env.LITELLM_BASE_URL, '| model:', process.env.LITELLM_MODEL || 'default');
   }
 });
 

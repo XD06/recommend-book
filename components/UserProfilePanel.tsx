@@ -4,11 +4,9 @@ import { Book, BookStatus, BookLevel, UserProfile, ReadingLevel } from '../types
 import { Card, CardHeader } from './Card';
 import { Button } from './Button';
 import { analyzeUserProfileStream, ProfileAnalysisResult } from '../services/geminiService';
-import { useTypewriter } from '../hooks/useTypewriter';
-import { useAIStreaming } from '../hooks/useAIStreaming';
-import { AgentActivity, useAgentActivity } from './AgentActivity';
+import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import {
-  Sparkle, Robot, Target, Eye, Compass, PencilSimple, FloppyDisk, ArrowClockwise, Brain,
+  Sparkle, Robot, Target, Eye, Compass, PencilSimple, FloppyDisk, ArrowClockwise,
 } from '@phosphor-icons/react';
 
 interface UserProfilePanelProps {
@@ -27,15 +25,13 @@ const levelOptions: { value: ReadingLevel; label: string; desc: string }[] = [
 export const UserProfilePanel: React.FC<UserProfilePanelProps> = ({ profile, onUpdate, books }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const agent = useAgentActivity();
-  const aiStream = useAIStreaming();
+  const ai = useAIActivity();
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [editLevel, setEditLevel] = useState<ReadingLevel>(profile.readingLevel);
   const [editGoal, setEditGoal] = useState(profile.readingGoal || '');
   const [editCategories, setEditCategories] = useState(profile.preferredCategories.join('、'));
   const [editTime, setEditTime] = useState(profile.dailyReadingTime?.toString() || '');
   const [editNickname, setEditNickname] = useState(profile.nickname || '');
-  const typewriter = useTypewriter(2);
 
   const handleSave = () => {
     onUpdate({
@@ -51,11 +47,9 @@ export const UserProfilePanel: React.FC<UserProfilePanelProps> = ({ profile, onU
 
   const handleAnalyze = async () => {
     setAnalyzing(true);
-    agent.reset();
-    aiStream.reset();
-    aiStream.startTimer();
+    ai.reset();
+    ai.startTimer();
     setAnalyzeError(null);
-    typewriter.reset();
     try {
       const reading = books.filter(b => b.status === BookStatus.READING);
       const finished = books.filter(b => b.status === BookStatus.FINISHED);
@@ -104,14 +98,13 @@ export const UserProfilePanel: React.FC<UserProfilePanelProps> = ({ profile, onU
           library: books,
         },
         {
-          onChunk: (chunk) => typewriter.append(chunk),
-          onPhase: (phase) => agent.handlePhase(phase),
-          onToolCall: (toolName, label, round) => agent.handleToolCall(toolName, label, round),
-          onReasoning: aiStream.onReasoning,
+          onChunk: (chunk) => ai.handleChunk(chunk),
+          onPhase: (phase) => ai.handlePhase(phase),
+          onToolCall: (toolName, label, round) => ai.handleToolCall(toolName, label, round),
+          onReasoning: ai.handleReasoning,
         },
       );
 
-      typewriter.finish();
       onUpdate({
         ...profile,
         aiAnalysis: {
@@ -122,15 +115,11 @@ export const UserProfilePanel: React.FC<UserProfilePanelProps> = ({ profile, onU
           lastUpdated: new Date().toISOString(),
         },
       });
-      typewriter.reset();
     } catch (e) {
       setAnalyzeError(e instanceof Error ? e.message : '分析失败');
-      typewriter.reset();
     } finally {
       setAnalyzing(false);
-      agent.reset();
-      aiStream.stopTimer();
-      aiStream.resetReasoning();
+      ai.stopTimer();
     }
   };
 
@@ -284,46 +273,19 @@ export const UserProfilePanel: React.FC<UserProfilePanelProps> = ({ profile, onU
             }
           />
 
-          {/* 流式文本 */}
-          {analyzing && typewriter.displayedText && (
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 mb-3">
-              <p className="text-sm text-zinc-600 leading-relaxed whitespace-pre-wrap">
-                {typewriter.displayedText}
-                <span className="inline-block w-0.5 h-4 bg-accent-500 ml-0.5 animate-pulse align-middle" />
-              </p>
-            </div>
-          )}
-
-          {/* Loading */}
-          {analyzing && !typewriter.displayedText && (
-            <div className="py-4 space-y-3">
-              <AgentActivity
-                phase={agent.phase}
-                toolCalls={agent.toolCalls}
-                hasStreamingText={!!typewriter.displayedText}
+          {/* AI 活动面板 */}
+          {analyzing && (
+            <div className="py-4">
+              <AIActivityPanel
+                phase={ai.phase}
+                toolCalls={ai.toolCalls}
+                reasoningText={ai.reasoningText}
+                elapsedTime={ai.elapsedTime}
+                receivedChars={ai.receivedChars}
+                onCancel={() => { ai.reset(); setAnalyzing(false); }}
                 thinkingLabel="正在分析阅读数据"
                 generatingLabel="正在生成画像报告"
               />
-              {/* AI 推理过程 */}
-              {aiStream.reasoningText && (
-                <details className="group pt-2 border-t border-zinc-200/60">
-                  <summary className="flex items-center gap-1.5 cursor-pointer text-xs text-zinc-400 hover:text-zinc-600 transition-colors select-none">
-                    <Brain size={12} />
-                    <span>AI 思考过程</span>
-                  </summary>
-                  <div className="mt-1.5 max-h-32 overflow-y-auto rounded-lg bg-white/60 p-2">
-                    <p className="text-[11px] text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-                      {aiStream.reasoningText.slice(-500)}
-                    </p>
-                  </div>
-                </details>
-              )}
-              {/* 已用时间 */}
-              {aiStream.elapsedTime > 0 && (
-                <span className="text-[11px] text-zinc-400 tabular-nums">
-                  已用时 {aiStream.elapsedTime}s
-                </span>
-              )}
             </div>
           )}
 

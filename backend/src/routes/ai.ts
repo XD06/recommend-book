@@ -66,16 +66,16 @@ function writeSSE(res: Response, data: any): void {
  * 创建请求级别的 AbortController
  * 当客户端断开 SSE 连接时，自动 abort AI 调用
  */
-function createRequestAbort(req: Request, res: Response): AbortSignal {
+function createRequestAbort(_req: Request, res: Response): AbortSignal {
   const controller = new AbortController();
-  const onClose = () => {
-    controller.abort();
-  };
-  req.on('close', onClose);
-  res.on('close', onClose);
-  res.on('finish', () => {
-    req.off('close', onClose);
-    res.off('close', onClose);
+  // 只监听 res.on('close') — 客户端断开 SSE 连接时触发
+  // 不能监听 req.on('close') — 在 Node.js 中，express.json() 解析完 body 后
+  // req 流被消费，close 事件就会触发，导致 signal 被立即 abort
+  res.on('close', () => {
+    if (!controller.signal.aborted) {
+      console.log('[AI] 客户端断开连接，abort AI 调用');
+      controller.abort();
+    }
   });
   return controller.signal;
 }
@@ -257,7 +257,8 @@ router.post('/reorganize', validate(reorganizeSchema), async (req, res, next) =>
 
 // 流式个性化推荐
 router.post('/recommend/stream', validate(recommendSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] recommend/stream 开始处理, library size:', req.body.library?.length || 0);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await getRecommendationsStream(
@@ -279,7 +280,8 @@ router.post('/recommend/stream', validate(recommendSchema), async (req, res) => 
 
 // 流式生成书籍解读
 router.post('/insight/stream', validate(insightSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] insight/stream 开始:', req.body.title);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await generateInsightStream(
@@ -304,7 +306,8 @@ router.post('/insight/stream', validate(insightSchema), async (req, res) => {
 
 // 流式规划阅读路径
 router.post('/reading-path/stream', validate(pathSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] reading-path/stream 开始:', req.body.category);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const { books, category, subcategory, customRequirements } = req.body;
@@ -362,7 +365,8 @@ const bookQASchema = z.object({
 });
 
 router.post('/book-qa/stream', validate(bookQASchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] book-qa/stream 开始:', req.body.question?.slice(0, 50));
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const { question, bookContext, conversationHistory, library } = req.body;
@@ -404,7 +408,8 @@ const insightsSchema = z.object({
 });
 
 router.post('/reading-insights/stream', validate(insightsSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] reading-insights/stream 开始, books:', req.body.totalBooks);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await generateReadingInsightsStream(
@@ -449,7 +454,8 @@ const profileSchema = z.object({
 });
 
 router.post('/profile/stream', validate(profileSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] profile/stream 开始, books:', req.body.totalBooks);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await analyzeUserProfileStream(
@@ -480,7 +486,8 @@ const compareBooksSchema = z.object({
 });
 
 router.post('/compare-books/stream', validate(compareBooksSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] compare-books/stream 开始, books:', req.body.books?.length);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await compareBooksStream(
@@ -533,7 +540,8 @@ const readingSummarySchema = z.object({
 });
 
 router.post('/reading-summary/stream', validate(readingSummarySchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] reading-summary/stream 开始:', req.body.title);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await generateReadingSummaryStream(
@@ -570,7 +578,8 @@ const notesOrganizeSchema = z.object({
 });
 
 router.post('/notes/stream', validate(notesOrganizeSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] notes/stream 开始:', req.body.bookTitle);
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await organizeNotesStream(
@@ -620,7 +629,8 @@ const chatSchema = z.object({
 });
 
 router.post('/chat/stream', validate(chatSchema), async (req, res) => {
-  initSSE(res);
+console.log('[AI] chat/stream 开始:', req.body.question?.slice(0, 50));
+initSSE(res);
   const signal = createRequestAbort(req, res);
   try {
     const result = await readingAssistantStream(

@@ -7,6 +7,9 @@
 
 @layer base {
   :root {
+    /* 强制浅色模式 — 防止系统深色模式闪烁 */
+    color-scheme: light;
+
     /* Design Tokens - DeepRead 2.0 */
     --color-bg: #fafafa;
     --color-surface: #ffffff;
@@ -47,7 +50,6 @@
   body {
     @apply bg-zinc-50 text-zinc-900 antialiased;
     font-feature-settings: 'cv01', 'cv03', 'cv04', 'ss01';
-    background-color: var(--color-bg);
   }
 
   /* Custom Scrollbar - Minimal */
@@ -218,20 +220,5 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
-  }
-}
-
-/* Dark mode support - prepared */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-bg: #09090b;
-    --color-surface: #18181b;
-    --color-surface-elevated: #27272a;
-    --color-surface-subtle: #27272a;
-    --color-border: rgba(255, 255, 255, 0.08);
-    --color-border-strong: rgba(255, 255, 255, 0.15);
-    --color-text: #fafafa;
-    --color-text-secondary: #a1a1aa;
-    --color-text-tertiary: #71717a;
   }
 }

@@ -3,8 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Book, AIInsight, DoubanBookData } from '../types';
 import { chatWithBookStream, ChatMessage, ApiError } from '../services/geminiService';
 import { useTypewriter } from '../hooks/useTypewriter';
-import { useAIStreaming } from '../hooks/useAIStreaming';
-import { AgentActivity, useAgentActivity } from './AgentActivity';
+import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import {
   PaperPlaneTilt,
@@ -14,7 +13,6 @@ import {
   Trash,
   ArrowClockwise,
   StopCircle,
-  Brain,
 } from '@phosphor-icons/react';
 
 interface BookQAProps {
@@ -44,8 +42,7 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
   const [loading, setLoading] = useState(false);
   const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
   const typewriter = useTypewriter(2);
-  const agent = useAgentActivity();
-  const aiStream = useAIStreaming();
+  const ai = useAIActivity();
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -112,9 +109,8 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
     setLoading(true);
     setLastFailedQuestion(null);
     typewriter.reset();
-    agent.reset();
-    aiStream.reset();
-    aiStream.startTimer();
+    ai.reset();
+    ai.startTimer();
 
     // 创建 AbortController 支持取消
     const controller = new AbortController();
@@ -135,9 +131,9 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
         },
         {
           onChunk: (chunk) => typewriter.append(chunk),
-          onPhase: (phase) => agent.handlePhase(phase),
-          onToolCall: (toolName, label, round) => agent.handleToolCall(toolName, label, round),
-          onReasoning: aiStream.onReasoning,
+          onPhase: (phase) => ai.handlePhase(phase),
+          onToolCall: (toolName, label, round) => ai.handleToolCall(toolName, label, round),
+          onReasoning: ai.handleReasoning,
           onBookUpdate: (bookId, updates) => {
             window.dispatchEvent(new CustomEvent('aiBookUpdate', { detail: { bookId, updates } }));
           },
@@ -164,9 +160,7 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
       typewriter.reset();
     } finally {
       setLoading(false);
-      agent.reset();
-      aiStream.stopTimer();
-      aiStream.resetReasoning();
+      ai.stopTimer();
       abortRef.current = null;
     }
   };
@@ -178,8 +172,7 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
       abortRef.current = null;
     }
     setLoading(false);
-    agent.reset();
-    aiStream.reset();
+    ai.reset();
     typewriter.reset();
     setMessages((prev) => prev.slice(0, -1)); // 移除最后一条用户消息
   };
@@ -307,69 +300,32 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
                     transition={{ duration: 1, repeat: Infinity, ease: 'easeInOut' }}
                     className="inline-block w-0.5 h-4 bg-accent-500 ml-0.5 align-middle rounded-full"
                   />
-                  {/* AI 推理过程 */}
-                  {aiStream.reasoningText && (
-                    <details className="group mt-2 pt-2 border-t border-zinc-200/60">
-                      <summary className="flex items-center gap-1.5 cursor-pointer text-xs text-zinc-400 hover:text-zinc-600 transition-colors select-none">
-                        <Brain size={12} />
-                        <span>AI 思考过程</span>
-                      </summary>
-                      <div className="mt-1.5 max-h-32 overflow-y-auto rounded-lg bg-white/60 p-2">
-                        <p className="text-[11px] text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-                          {aiStream.reasoningText.slice(-500)}
-                        </p>
-                      </div>
-                    </details>
-                  )}
-                  <div className="mt-2 flex justify-end">
-                    <button
-                      onClick={handleStop}
-                      className="px-2 py-1 rounded-md text-xs text-zinc-400 hover:text-rose-600 hover:bg-rose-50 active:scale-95 transition-all flex items-center gap-1"
-                    >
-                      <StopCircle size={12} />
-                      停止
-                    </button>
+                  {/* 工具调用历史 + 计时 + 停止 */}
+                  <div className="mt-2 pt-2 border-t border-zinc-200/60">
+                    <AIActivityPanel
+                      phase={ai.phase}
+                      toolCalls={ai.toolCalls}
+                      reasoningText={ai.reasoningText}
+                      elapsedTime={ai.elapsedTime}
+                      receivedChars={0}
+                      onCancel={handleStop}
+                      thinkingLabel="正在分析问题"
+                      generatingLabel="正在组织回答"
+                      compact
+                    />
                   </div>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  <AgentActivity
-                    phase={agent.phase}
-                    toolCalls={agent.toolCalls}
-                    hasStreamingText={!!typewriter.displayedText}
-                    thinkingLabel="正在分析问题"
-                    generatingLabel="正在组织回答"
-                  />
-                  {/* AI 推理过程 */}
-                  {aiStream.reasoningText && (
-                    <details className="group pt-1 border-t border-zinc-200/60">
-                      <summary className="flex items-center gap-1.5 cursor-pointer text-xs text-zinc-400 hover:text-zinc-600 transition-colors select-none">
-                        <Brain size={12} />
-                        <span>AI 思考过程</span>
-                      </summary>
-                      <div className="mt-1.5 max-h-32 overflow-y-auto rounded-lg bg-white/60 p-2">
-                        <p className="text-[11px] text-zinc-400 leading-relaxed whitespace-pre-wrap break-words">
-                          {aiStream.reasoningText.slice(-500)}
-                        </p>
-                      </div>
-                    </details>
-                  )}
-                  {/* 计时 + 取消 */}
-                  <div className="flex items-center justify-between">
-                    {aiStream.elapsedTime > 0 && (
-                      <span className="text-[11px] text-zinc-400 tabular-nums">
-                        已用时 {aiStream.elapsedTime}s
-                      </span>
-                    )}
-                    <button
-                      onClick={handleStop}
-                      className={`px-2 py-1 rounded-md text-xs text-zinc-400 hover:text-rose-600 hover:bg-rose-50 active:scale-95 transition-all flex items-center gap-1 ${aiStream.elapsedTime > 0 ? '' : 'ml-auto'}`}
-                    >
-                      <StopCircle size={12} />
-                      取消
-                    </button>
-                  </div>
-                </div>
+                <AIActivityPanel
+                  phase={ai.phase}
+                  toolCalls={ai.toolCalls}
+                  reasoningText={ai.reasoningText}
+                  elapsedTime={ai.elapsedTime}
+                  receivedChars={0}
+                  onCancel={handleStop}
+                  thinkingLabel="正在分析问题"
+                  generatingLabel="正在组织回答"
+                />
               )}
             </div>
           </motion.div>

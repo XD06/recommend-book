@@ -137,12 +137,15 @@ async function fetchSSEStream(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
 ): Promise<any> {
-  const response = await fetch(`${API_BASE}/ai/${endpoint}`, {
+  const url = `${API_BASE}/ai/${endpoint}`;
+  console.log(`[Frontend] → POST ${endpoint}  @ ${new Date().toLocaleTimeString()}`);
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify(body),
     signal,
   });
+  console.log(`[Frontend] ← ${endpoint} response: ${response.status} ${response.statusText}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: '请求失败' }));
@@ -400,8 +403,8 @@ export async function getPersonalizedRecommendations(
     headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify({
       library,
-      context,
-      mood: 'focused',
+      userRequest: context,
+      userMood: 'focused',
     }),
   });
 
@@ -410,7 +413,8 @@ export async function getPersonalizedRecommendations(
     throw new Error(error.error || '推荐失败');
   }
 
-  return await response.json();
+  const json = await response.json();
+  return json.data ?? json;
 }
 
 /**
@@ -477,7 +481,8 @@ export async function generateReadingPath(
     throw new Error(error.error || '规划路径失败');
   }
 
-  return await response.json();
+  const json = await response.json();
+  return json.data ?? json;
 }
 
 /**
@@ -497,7 +502,8 @@ export async function reorganizeLibrary(
     throw new Error(error.error || '整理失败');
   }
 
-  return await response.json();
+  const json = await response.json();
+  return json.data ?? json;
 }
 
 /**

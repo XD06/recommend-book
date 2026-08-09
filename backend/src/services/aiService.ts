@@ -64,10 +64,10 @@ const getFallbackModel = (): string | undefined =>
 const isLiteLLM = () => !!process.env.LITELLM_BASE_URL;
 
 // AI 调用超时（毫秒）
-const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '60000', 10);
+const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '30000', 10);
 
 // 重试配置
-const AI_MAX_RETRIES = parseInt(process.env.AI_MAX_RETRIES || '3', 10);
+const AI_MAX_RETRIES = parseInt(process.env.AI_MAX_RETRIES || '2', 10);
 const AI_RETRY_BASE_DELAY = parseInt(process.env.AI_RETRY_BASE_DELAY || '1000', 10);
 
 // 上下文窗口管理配置
@@ -100,6 +100,32 @@ function createAbortSignal(externalSignal?: AbortSignal): { signal: AbortSignal;
   };
 }
 
+/**
+ * 创建空闲超时 AbortSignal — 每次收到数据就重置计时器
+ * 推理模型（如 deepseek-v4-flash-plus）会先输出 reasoning_content 再输出 content，
+ * 固定超时会在推理阶段就杀掉请求。空闲超时只在真正无数据时才触发。
+ */
+function createIdleAbortSignal(externalSignal?: AbortSignal): { signal: AbortSignal; reset: () => void; cleanup: () => void } {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  const resetTimer = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+  return {
+    signal: controller.signal,
+    reset: resetTimer,
+    cleanup: () => clearTimeout(timer),
+  };
+}
+
 // ============================================================================
 // LiteLLM 流式 HTTP 调用（支持 tool_calls 收集）
 // ============================================================================
@@ -113,7 +139,13 @@ async function callLiteLLM(body: any, externalSignal?: AbortSignal): Promise<any
     stream: true,
   };
 
-  const { signal, cleanup } = createAbortSignal(externalSignal);
+  const model = body.model || 'unknown';
+  const msgCount = body.messages?.length || 0;
+  const bodyJson = JSON.stringify(requestBody);
+  console.log(`[AI] → LiteLLM 调用: model=${model}, messages=${msgCount}, tools=${body.tools?.length || 0}, body=${(bodyJson.length / 1024).toFixed(1)}KB`);
+  const fetchStart = Date.now();
+
+  const { signal, reset: resetIdle, cleanup } = createIdleAbortSignal(externalSignal);
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -121,19 +153,28 @@ async function callLiteLLM(body: any, externalSignal?: AbortSignal): Promise<any
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
     },
-    body: JSON.stringify(requestBody),
+    body: bodyJson,
     signal,
   });
+  console.log(`[AI] ← LiteLLM 响应: ${response.status} (${Date.now() - fetchStart}ms)`);
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`LiteLLM request failed: ${response.status} ${error}`);
+    const errorText = await response.text();
+    const err = new Error(`LiteLLM request failed: ${response.status} ${errorText.slice(0, 200)}`) as any;
+    // 502/503/504 通常是网关错误，标记为不可重试（服务挂了，重试无用）
+    if ([502, 503, 504].includes(response.status)) {
+      err.status = response.status;
+      err.name = 'GatewayError';
+      console.error(`[AI] ⚠️ LiteLLM 网关错误 ${response.status} — 服务可能不可用，不重试`);
+    }
+    throw err;
   }
 
   // 收集流式响应
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let fullContent = '';
+  let reasoningContent = '';
   let buffer = '';
   // 收集 tool_calls（按 index 累积）
   const toolCallsMap = new Map<number, any>();
@@ -143,6 +184,8 @@ async function callLiteLLM(body: any, externalSignal?: AbortSignal): Promise<any
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // 收到数据，重置空闲超时
+      resetIdle();
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -157,6 +200,10 @@ async function callLiteLLM(body: any, externalSignal?: AbortSignal): Promise<any
             const delta = chunk.choices?.[0]?.delta;
             if (delta?.content) {
               fullContent += delta.content;
+            }
+            // 处理推理模型的 reasoning_content（如 deepseek-v4-flash-plus）
+            if (delta?.reasoning_content) {
+              reasoningContent += delta.reasoning_content;
             }
             // 收集 tool_calls 增量
             if (delta?.tool_calls) {
@@ -189,6 +236,8 @@ async function callLiteLLM(body: any, externalSignal?: AbortSignal): Promise<any
   }
 
   const toolCalls = Array.from(toolCallsMap.values()).filter((tc: any) => tc.function.name);
+
+  console.log(`[AI] LiteLLM 完成: content=${fullContent.length}字, reasoning=${reasoningContent.length}字, tool_calls=${toolCalls.length}个 (${Date.now() - fetchStart}ms)`);
 
   return {
     choices: [{
@@ -249,7 +298,7 @@ async function callAIStream(
   signal?: AbortSignal
 ): Promise<string> {
   let fullContent = '';
-  const { signal: innerSignal, cleanup } = createAbortSignal(signal);
+  const { signal: innerSignal, reset: resetIdle, cleanup } = createIdleAbortSignal(signal);
 
   try {
     if (isLiteLLM()) {
@@ -279,6 +328,7 @@ async function callAIStream(
         try {
           const { done, value } = await reader.read();
           if (done) break;
+          resetIdle();
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
@@ -341,15 +391,16 @@ const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 
 /** 判断错误是否可重试 */
 function isRetryableError(err: any): boolean {
-  if (err?.name === 'AbortError') return false;
-  const status = err?.status || err?.statusCode;
-  if (status && RETRYABLE_STATUS.has(status)) return true;
-  // 网络错误 / 超时
-  const msg = err?.message || '';
-  if (/timeout|network|fetch failed|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg)) return true;
-  // LiteLLM / DeepSeek HTTP 错误中包含状态码
-  if (/failed: (429|500|502|503|504)/.test(msg)) return true;
-  return false;
+if (err?.name === 'AbortError') return false;
+if (err?.name === 'GatewayError') return false; // 502/503/504 网关错误，服务挂了，不重试
+const status = err?.status || err?.statusCode;
+if (status && RETRYABLE_STATUS.has(status)) return true;
+// 网络错误 / 超时
+const msg = err?.message || '';
+if (/timeout|network|fetch failed|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg)) return true;
+// LiteLLM / DeepSeek HTTP 错误中包含状态码（排除 502/503/504 已标记为 GatewayError）
+if (/failed: (429|500)/.test(msg)) return true;
+return false;
 }
 
 /** 指数退避延迟 */
@@ -369,27 +420,28 @@ function getRetryDelay(attempt: number): number {
  * - AbortError 不重试，直接抛出
  */
 async function callWithRetry<T>(
-  fn: (model: string) => Promise<T>,
-  signal?: AbortSignal,
+fn: (model: string) => Promise<T>,
+signal?: AbortSignal,
 ): Promise<T> {
-  const primaryModel = getModel();
-  let lastError: any;
+const primaryModel = getModel();
+let lastError: any;
 
-  for (let attempt = 0; attempt < AI_MAX_RETRIES; attempt++) {
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-    try {
-      return await fn(primaryModel);
-    } catch (err: any) {
-      lastError = err;
-      if (err?.name === 'AbortError') throw err;
-      if (!isRetryableError(err)) throw err;
-      if (attempt < AI_MAX_RETRIES - 1) {
-        const delay = getRetryDelay(attempt);
-        console.warn(`[AI] 调用失败 (attempt ${attempt + 1}/${AI_MAX_RETRIES}), ${delay}ms 后重试: ${err.message?.slice(0, 100)}`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-  }
+for (let attempt = 0; attempt < AI_MAX_RETRIES; attempt++) {
+if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+console.log(`[AI] 调用 AI (attempt ${attempt + 1}/${AI_MAX_RETRIES}, model=${primaryModel})`);
+try {
+return await fn(primaryModel);
+} catch (err: any) {
+lastError = err;
+if (err?.name === 'AbortError') throw err;
+if (!isRetryableError(err)) throw err;
+if (attempt < AI_MAX_RETRIES - 1) {
+const delay = getRetryDelay(attempt);
+console.warn(`[AI] 调用失败 (attempt ${attempt + 1}/${AI_MAX_RETRIES}), ${delay}ms 后重试: ${err.message?.slice(0, 100)}`);
+await new Promise(resolve => setTimeout(resolve, delay));
+}
+}
+}
 
   // 全部重试失败 — 尝试 fallback 模型
   const fallbackModel = getFallbackModel();
@@ -575,13 +627,15 @@ async function callAgentStream(
 
   // Phase 1: 工具调用循环（非流式）
   let lastContent: string | null = null;
+  console.log('[AI] Agent Phase 1: 信息收集 (thinking)');
   onPhase?.('thinking');
 
-  const MAX_ROUNDS = 5;
+  const MAX_ROUNDS = 3;
   // 运行时获取所有可用工具（书库工具 + 条件性 Web 工具）
   const tools = getAllTools();
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
+    const roundStart = Date.now();
     let response: { content: string | null; tool_calls?: any[] };
     try {
       response = await callAIWithTools(messages, tools, temperature, signal);
@@ -591,6 +645,7 @@ async function callAgentStream(
       if (round === 0) throw e;
       break;
     }
+    console.log(`[AI] Agent round ${round + 1}/${MAX_ROUNDS} 完成 (${Date.now() - roundStart}ms, tools: ${response.tool_calls?.length || 0})`);
 
     if (response.tool_calls && response.tool_calls.length > 0) {
       // Phase 1 透明化：如果 AI 返回了思考文本（content），推送给前端
@@ -624,10 +679,15 @@ async function callAgentStream(
       // 并行执行所有工具，保证结果顺序与 tool_calls 一致
       const results = await Promise.all(
         toolEntries.map(async ({ tc, args }) => {
+          const toolStart = Date.now();
+          console.log(`[AI] 执行工具: ${tc.function.name} (args=${JSON.stringify(args).slice(0, 80)})`);
           try {
             // 使用统一执行器（自动路由书库工具 / Web 工具）
-            return await executeAllTools(tc.function.name, args, library, userProfile, onBookUpdate);
+            const result = await executeAllTools(tc.function.name, args, library, userProfile, onBookUpdate);
+            console.log(`[AI] 工具完成: ${tc.function.name} (${Date.now() - toolStart}ms)`);
+            return result;
           } catch (toolErr: any) {
+            console.error(`[AI] 工具失败: ${tc.function.name} - ${toolErr.message}`);
             return JSON.stringify({ error: `工具执行失败: ${toolErr.message}` });
           }
         }),
@@ -650,6 +710,7 @@ async function callAgentStream(
   }
 
   // Phase 2: 流式生成最终回复
+  console.log('[AI] Agent Phase 2: 生成最终回复 (generating)');
   onPhase?.('generating');
 
   // 如果 Phase 1 的最后一轮已经有内容，且不需要 JSON 格式，直接以模拟流式方式输出
@@ -681,7 +742,7 @@ async function callAgentStream(
       body.response_format = { type: 'json_object' };
     }
 
-    const { signal: innerSignal, cleanup } = createAbortSignal(signal);
+    const { signal: innerSignal, reset: resetIdle, cleanup } = createIdleAbortSignal(signal);
     let fullContent = '';
     let buffer = '';
 
@@ -709,6 +770,7 @@ async function callAgentStream(
         try {
           const { done, value } = await reader.read();
           if (done) break;
+          resetIdle();
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
@@ -1173,18 +1235,11 @@ export async function getRecommendationsStream(
   onReasoning?: (text: string) => void,
 ): Promise<AIResponse> {
   // 使用 withTools 统一构建工具说明（包含新增的分析型工具）
-  const systemPrompt = withTools(
-    READING_ADVISOR_SYSTEM_PROMPT,
-    5,
-    `推荐时请按以下策略使用工具：
-1. 先用 get_reading_taste_profile 了解用户的阅读品味和知识结构
-2. 再用 get_reading_gaps 发现用户的知识缺口
-3. 根据品味和缺口，用 search_library / get_book_details 查找具体书籍
-4. 如需了解分类详情，用 get_category_stats
-5. 如需了解用户背景，用 get_user_profile
-
-这样你的推荐会更有洞察力和针对性，而不是简单的关键词匹配。`,
-  );
+const systemPrompt = withTools(
+READING_ADVISOR_SYSTEM_PROMPT,
+3,
+`书库概览和阅读品味画像已在上下文中提供。如需更详细的信息，可使用工具查询（最多3轮），但不要为了使用工具而使用工具——如果已有信息足够回答，直接给出推荐。`,
+);
 
   let userPrompt = buildLibraryOverview(context.library);
 
@@ -1249,14 +1304,11 @@ export async function generateInsightStream(
   onReasoning?: (text: string) => void,
 ): Promise<AIInsight> {
   if (library && library.length > 0) {
-    const systemPrompt = withTools(
-      INSIGHT_GENERATOR_SYSTEM_PROMPT,
-      3,
-      `生成解读时请按以下策略使用工具：
-1. 先用 search_library 查找同分类、同作者、同主题的书
-2. 如需了解某本书的详情，用 get_book_details
-3. 在阅读建议中提及用户书库中的相关书籍，建立知识连接`,
-    );
+const systemPrompt = withTools(
+INSIGHT_GENERATOR_SYSTEM_PROMPT,
+2,
+`书库信息已在上下文中提供。如需查找相关书籍可使用工具，但已有信息足够时直接生成解读。`,
+);
 
     let userPrompt = `请为以下书籍生成深度解读：\n\n`;
     userPrompt += `书名: 《${title}》\n作者: ${author}\n难度: ${level}\n`;
@@ -1304,14 +1356,11 @@ export async function generateReadingPathStream(
   signal?: AbortSignal,
   onReasoning?: (text: string) => void,
 ): Promise<ReadingPathResponse> {
-  const systemPrompt = withTools(
-    READING_PATH_SYSTEM_PROMPT,
-    3,
-    `规划路径时请按以下策略使用工具：
-1. 用 get_book_details 获取书籍的 AI 解读和核心章节，判断内容依赖关系
-2. 如需了解分类全貌，用 get_category_stats
-3. 如需了解用户已读书籍，用 get_reading_history`,
-  );
+const systemPrompt = withTools(
+READING_PATH_SYSTEM_PROMPT,
+2,
+`如需获取书籍详情或分类信息可使用工具，但已有信息足够时直接规划路径。`,
+);
 
   let userPrompt = `请为以下书籍规划阅读路径。\n\n`;
   userPrompt += `领域: ${category}${subcategory ? ` > ${subcategory}` : ''}\n`;
@@ -1408,15 +1457,11 @@ export async function generateReadingInsightsStream(
   signal?: AbortSignal,
   onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = withTools(
-    READING_INSIGHTS_SYSTEM_PROMPT,
-    5,
-    `生成洞察时请按以下策略使用工具：
-1. 先用 get_reading_taste_profile 了解用户阅读品味
-2. 再用 get_reading_gaps 分析知识缺口
-3. 根据品味和缺口生成有洞察力的分析
-4. 如需具体书籍信息，用 get_book_details / get_reading_history`,
-  );
+const systemPrompt = withTools(
+READING_INSIGHTS_SYSTEM_PROMPT,
+2,
+`阅读品味画像已在上下文中提供。如需更详细的信息可使用工具，但已有信息足够时直接生成洞察。`,
+);
 
   let userPrompt = `请根据以下阅读数据生成个性化洞察：\n\n`;
   userPrompt += `藏书：${data.totalBooks} 本（在读 ${data.readingCount}，已读 ${data.finishedCount}，未读 ${data.unreadCount}）\n`;
@@ -1463,15 +1508,11 @@ export async function analyzeUserProfileStream(
   signal?: AbortSignal,
   onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = withTools(
-    PROFILE_ANALYSIS_SYSTEM_PROMPT,
-    5,
-    `分析用户画像时请按以下策略使用工具：
-1. 先用 get_reading_taste_profile 了解用户阅读品味
-2. 再用 get_reading_gaps 分析知识缺口
-3. 结合品味和缺口，给出更精准的水平推断和建议
-4. 如需具体书籍信息，用 get_book_details / get_reading_history`,
-  );
+const systemPrompt = withTools(
+PROFILE_ANALYSIS_SYSTEM_PROMPT,
+2,
+`阅读品味画像已在上下文中提供。如需更详细的信息可使用工具，但已有信息足够时直接给出分析。`,
+);
 
   let userPrompt = `请分析以下用户的阅读数据：\n\n`;
   userPrompt += `藏书：${data.totalBooks} 本（在读 ${data.readingCount}，已读 ${data.finishedCount}，未读 ${data.unreadCount}）\n`;
@@ -1513,14 +1554,11 @@ export async function compareBooksStream(
   signal?: AbortSignal,
   onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = withTools(
-    BOOK_COMPARISON_SYSTEM_PROMPT,
-    3,
-    `对比书籍时请按以下策略使用工具：
-1. 先用 get_book_details 获取要对比的书籍的详细信息
-2. 如需了解用户书库中的相关书籍，用 search_library
-3. 如需了解用户阅读品味，用 get_reading_taste_profile`,
-  );
+const systemPrompt = withTools(
+BOOK_COMPARISON_SYSTEM_PROMPT,
+2,
+`如需获取书籍详情可使用工具，但已有信息足够时直接生成对比分析。`,
+);
 
   let userPrompt = buildBookComparisonUserPrompt(books);
   userPrompt += `\n${buildLibraryOverview(library)}`;
@@ -1552,14 +1590,11 @@ export async function generateReadingSummaryStream(
   signal?: AbortSignal,
   onReasoning?: (text: string) => void,
 ): Promise<any> {
-  const systemPrompt = withTools(
-    READING_SUMMARY_SYSTEM_PROMPT,
-    3,
-    `生成总结时请按以下策略使用工具：
-1. 用 search_library 查找用户书库中与这本书相关的书籍（同分类、同作者、同主题）
-2. 如需了解书籍详情，用 get_book_details
-3. 在行动建议中推荐用户书库中的相关延伸阅读`,
-  );
+const systemPrompt = withTools(
+READING_SUMMARY_SYSTEM_PROMPT,
+2,
+`如需查找相关书籍可使用工具，但已有信息足够时直接生成总结。`,
+);
 
   const relatedBooks = library
     .filter(b => b.id !== data.title &&

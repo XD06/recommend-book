@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Book, BookStatus, BookLevel, getBookCoverUrl, hasBookCover } from '../types';
 import { Button } from './Button';
 import { Card } from './Card';
 import { Badge } from './Badge';
 import { DifficultyBadge, DifficultyScale } from './DifficultyBadge';
-import { generateBookInsight } from '../services/geminiService';
+import { generateInsightStream } from '../services/geminiService';
+import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import { useToast } from './Toast';
 import {
   X,
@@ -24,6 +25,8 @@ import {
   Hash,
   Users,
   TrendUp,
+  Brain,
+  StopCircle,
 } from '@phosphor-icons/react';
 
 interface BookDetailProps {
@@ -66,15 +69,16 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
   // AI 解读生成中状态
   const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
 
+  // 流式 AI 状态
+  const ai = useAIActivity();
+  const abortRef = useRef<AbortController | null>(null);
+
   const isUnread = book.status === BookStatus.UNREAD;
   const coverColor = book.coverColor || generateColor(book.title);
   
   // 豆瓣数据
   const doubanData = book.doubanData;
   
-  // 调试：检查封面数据
-  console.log('[BookDetail] 书籍:', book.title, '豆瓣数据:', doubanData ? { hasCover: !!doubanData.cover_url, cover: doubanData.cover_url?.substring(0, 50) } : '无');
-
   const handleSaveEdit = () => {
     onUpdate({
       ...book,
@@ -91,6 +95,12 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
   const handleStartReading = async () => {
     setIsActivating(true);
     setIsGeneratingInsight(true);
+    ai.reset();
+    ai.startTimer();
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       // 先保存阅读状态，让用户可以立即开始阅读
       onUpdate({
@@ -113,19 +123,26 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
         pubdate: doubanData.publish_year || doubanData.pubdate,
       } : undefined;
       
-      console.log('开始生成 AI 解读...', { title: book.title, doubanDataForAI });
-      
-      const insight = await generateBookInsight(
-        book.title, 
-        book.author, 
-        book.level,
-        book.category,
-        book.subcategory,
-        parseInt(totalPagesInput) || doubanData?.pages || 300,
-        doubanDataForAI
+      const insight = await generateInsightStream(
+        {
+          title: book.title,
+          author: book.author,
+          level: book.level,
+          category: book.category,
+          subcategory: book.subcategory,
+          totalPages: parseInt(totalPagesInput) || doubanData?.pages || 300,
+          doubanData: doubanDataForAI,
+        },
+        {
+          onPhase: (phase) => ai.handlePhase(phase),
+          onToolCall: (toolName, label, round) => ai.handleToolCall(toolName, label, round),
+          onChunk: (chunk) => ai.handleChunk(chunk),
+          onReasoning: ai.handleReasoning,
+        },
+        controller.signal,
       );
       
-      console.log('AI 解读生成成功:', insight);
+      typewriter.finish();
       
       // 更新 AI 解读
       onUpdate({
@@ -143,13 +160,29 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
       showSuccess('AI 解读生成成功');
       // 自动切换到 AI 解读 Tab
       setActiveTab('insight');
-    } catch (error) {
-      console.error('AI 解读生成失败:', error);
-      showError('AI 解读生成失败，但已保存阅读进度');
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        // 用户取消，不显示错误
+      } else {
+        console.error('AI 解读生成失败:', error);
+        showError('AI 解读生成失败，但已保存阅读进度');
+      }
     } finally {
       setIsActivating(false);
       setIsGeneratingInsight(false);
+      ai.stopTimer();
+      abortRef.current = null;
     }
+  };
+
+  const handleStopInsight = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setIsActivating(false);
+    setIsGeneratingInsight(false);
+    ai.reset();
   };
 
   const updateProgress = (type: 'page' | 'percent') => {
@@ -546,13 +579,33 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -10 }}
                     transition={{ duration: 0.2 }}
-                    className="text-center py-12"
+                    className="py-6"
                   >
-                    <div className="w-16 h-16 rounded-2xl bg-accent-50 flex items-center justify-center mx-auto mb-4 animate-pulse">
-                      <Lightbulb className="w-8 h-8 text-accent-500" />
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 md:p-5">
+                      <div className="flex gap-3">
+                        <div className="w-9 h-9 rounded-full bg-zinc-900 text-white flex items-center justify-center shrink-0">
+                          <motion.div
+                            animate={{ scale: [1, 1.1, 1] }}
+                            transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                          >
+                            <Lightbulb className="w-4 h-4" weight="fill" />
+                          </motion.div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">正在生成 AI 解读</h4>
+                          <AIActivityPanel
+                            phase={ai.phase}
+                            toolCalls={ai.toolCalls}
+                            reasoningText={ai.reasoningText}
+                            elapsedTime={ai.elapsedTime}
+                            receivedChars={ai.receivedChars}
+                            onCancel={handleStopInsight}
+                            thinkingLabel="正在分析书籍信息"
+                            generatingLabel="正在生成解读内容"
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <p className="text-sm font-medium text-zinc-700 mb-1">正在生成 AI 解读...</p>
-                    <p className="text-xs text-zinc-400">这可能需要几秒钟时间</p>
                   </motion.div>
                 )}
 
