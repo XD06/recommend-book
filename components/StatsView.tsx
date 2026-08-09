@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { motion } from 'motion/react';
+import React, { useMemo, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   ChartPie,
   TrendUp,
@@ -8,6 +8,8 @@ import {
   CheckCircle,
   Stack,
   Star,
+  Robot,
+  X,
 } from '@phosphor-icons/react';
 import { Book, BookStatus, BookLevel, CategoryGroup, getBookCoverUrl, hasBookCover } from '../types';
 import { Card, CardHeader } from './Card';
@@ -15,6 +17,7 @@ import { Badge } from './Badge';
 import { ReadingHeatmap } from './ReadingHeatmap';
 import { ReadingTimeline } from './ReadingTimeline';
 import { DifficultyScale } from './DifficultyBadge';
+import { ReadingAssistant } from './ReadingAssistant';
 
 interface StatsViewProps {
   books: Book[];
@@ -22,6 +25,7 @@ interface StatsViewProps {
 }
 
 export const StatsView: React.FC<StatsViewProps> = ({ books, categories }) => {
+  const [showAssistant, setShowAssistant] = useState(false);
   const stats = useMemo(() => {
     const total = books.length;
     const reading = books.filter((b) => b.status === BookStatus.READING);
@@ -257,6 +261,61 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories }) => {
           )}
         </motion.div>
       </div>
+
+      {/* 浮动阅读助手按钮 */}
+      <motion.button
+        initial={{ scale: 0, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ delay: 0.5, type: 'spring', stiffness: 200 }}
+        onClick={() => setShowAssistant(true)}
+        className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-2xl bg-zinc-900 text-white shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+      >
+        <Robot size={24} weight="fill" />
+        <span className="absolute -top-1 -right-1 w-3 h-3 bg-accent-500 rounded-full border-2 border-white" />
+      </motion.button>
+
+      {/* 阅读助手面板 */}
+      <AnimatePresence>
+        {showAssistant && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end md:items-center justify-center p-0 md:p-4 bg-zinc-900/40 backdrop-blur-sm"
+            onClick={() => setShowAssistant(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}
+              className="bg-white w-full max-w-2xl rounded-t-2xl md:rounded-2xl shadow-modal overflow-hidden flex flex-col max-h-[85vh]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between p-4 border-b border-zinc-100">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-zinc-900 text-white flex items-center justify-center">
+                    <Robot size={18} weight="fill" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-zinc-900 text-sm">阅读管家</h3>
+                    <p className="text-xs text-zinc-400">随时问我关于书库的问题</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowAssistant(false)}
+                  className="p-2 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-hidden p-4">
+                <ReadingAssistant library={books} />
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

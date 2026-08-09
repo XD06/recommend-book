@@ -7,6 +7,7 @@ import { Badge } from './Badge';
 import { DifficultyBadge, DifficultyScale } from './DifficultyBadge';
 import { generateInsightStream } from '../services/geminiService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
+import { BookQA } from './BookQA';
 import { useToast } from './Toast';
 import {
   X,
@@ -33,7 +34,7 @@ interface BookDetailProps {
   book: Book;
   books: Book[];
   onClose: () => void;
-  onUpdate: (updatedBook: Book) => void;
+  onUpdate: (updatedBook: Book, silent?: boolean) => void;
 }
 
 const levelText: Record<BookLevel, string> = {
@@ -51,7 +52,7 @@ const levelColors: Record<BookLevel, string> = {
 export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, onUpdate }) => {
   const { showSuccess, showError } = useToast();
   const [isActivating, setIsActivating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'insight' | 'progress' | 'douban'>('insight');
+  const [activeTab, setActiveTab] = useState<'insight' | 'progress' | 'douban' | 'qa'>('insight');
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(book.title);
   const [editAuthor, setEditAuthor] = useState(book.author);
@@ -102,19 +103,23 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // 预先计算阅读参数
+    const totalPages = parseInt(totalPagesInput) || doubanData?.pages || 300;
+    const newUserData = {
+      totalPages,
+      currentPage: 0,
+      progressPercentage: 0,
+      startDate: new Date().toISOString(),
+    };
+
+    // 静默更新阅读状态（不弹 toast）
+    onUpdate({
+      ...book,
+      status: BookStatus.READING,
+      userData: newUserData,
+    }, true);
+
     try {
-      // 先保存阅读状态，让用户可以立即开始阅读
-      onUpdate({
-        ...book,
-        status: BookStatus.READING,
-        userData: {
-          totalPages: parseInt(totalPagesInput) || doubanData?.pages || 300,
-          currentPage: 0,
-          progressPercentage: 0,
-          startDate: new Date().toISOString(),
-        },
-      });
-      
       // 传入完整的豆瓣数据以获得更精准的 AI 解读
       const doubanDataForAI = doubanData ? {
         rating: doubanData.rating_score,
@@ -131,7 +136,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
           level: book.level,
           category: book.category,
           subcategory: book.subcategory,
-          totalPages: parseInt(totalPagesInput) || doubanData?.pages || 300,
+          totalPages,
           doubanData: doubanDataForAI,
           library: books,
         },
@@ -144,18 +149,13 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
         controller.signal,
       );
       
-      // 更新 AI 解读
+      // 保存 AI 解读（静默，因为下面会自己弹 toast）
       onUpdate({
         ...book,
         status: BookStatus.READING,
         aiInsight: insight,
-        userData: {
-          totalPages: parseInt(totalPagesInput) || doubanData?.pages || 300,
-          currentPage: 0,
-          progressPercentage: 0,
-          startDate: new Date().toISOString(),
-        },
-      });
+        userData: newUserData,
+      }, true);
       
       showSuccess('AI 解读生成成功');
       // 自动切换到 AI 解读 Tab
@@ -402,7 +402,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
             <div className="space-y-6">
               {/* Tabs */}
               <div className="flex gap-1 border-b border-zinc-200 -mx-5 md:-mx-6 px-5 md:px-6">
-                {(['insight', 'progress', 'douban'] as const).map((tab) => (
+                {(['insight', 'progress', 'qa', 'douban'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -413,7 +413,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
                         : 'border-transparent text-zinc-400 hover:text-zinc-600',
                     ].join(' ')}
                   >
-                    {tab === 'insight' ? 'AI 解读' : tab === 'progress' ? '进度追踪' : '豆瓣数据'}
+                    {tab === 'insight' ? 'AI 解读' : tab === 'progress' ? '进度追踪' : tab === 'qa' ? '问问答' : '豆瓣数据'}
                   </button>
                 ))}
               </div>
@@ -581,7 +581,8 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
                               ...book,
                               status: BookStatus.UNREAD,
                               userData: undefined,
-                            });
+                            }, true);
+                            showSuccess('已取消阅读');
                           }}
                           className="text-zinc-400 hover:text-danger-600"
                         >
@@ -643,6 +644,19 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
                     </div>
                     <p className="text-sm font-medium text-zinc-600 mb-1">暂无 AI 解读</p>
                     <p className="text-xs text-zinc-400">点击"开始阅读"生成个性化解读</p>
+                  </motion.div>
+                )}
+
+                {/* 问答 Tab */}
+                {activeTab === 'qa' && (
+                  <motion.div
+                    key="qa"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <BookQA book={book} library={books} />
                   </motion.div>
                 )}
 

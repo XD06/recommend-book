@@ -10,6 +10,7 @@ import { StatsView } from './components/StatsView';
 import { DataManagement } from './components/DataManagement';
 import { ToastProvider, useToast } from './components/Toast';
 import { LoginPage } from './components/LoginPage';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { reorganizeLibrary } from './services/geminiService';
 import { fetchBooks, saveBooks, fetchCategoryMeta, saveCategoryMeta } from './services/bookService';
 import { isLoggedIn, logout, fetchCurrentUser, AuthUser } from './services/authService';
@@ -158,10 +159,10 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
     setActiveTab('library');
   };
 
-  const handleBookUpdate = (updatedBook: Book) => {
+  const handleBookUpdate = (updatedBook: Book, silent = false) => {
     setBooks(books.map((b) => (b.id === updatedBook.id ? updatedBook : b)));
     setSelectedBook(updatedBook);
-    showSuccess('书籍信息已更新');
+    if (!silent) showSuccess('书籍信息已更新');
   };
 
   React.useEffect(() => {
@@ -422,7 +423,9 @@ const App: React.FC = () => {
   // 已登录 → 显示主应用
   return (
     <ToastProvider>
-      <AppContent user={user} onLogout={handleLogout} />
+      <ErrorBoundary>
+        <AppContent user={user} onLogout={handleLogout} />
+      </ErrorBoundary>
     </ToastProvider>
   );
 };
