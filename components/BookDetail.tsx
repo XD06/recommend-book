@@ -144,8 +144,6 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
         controller.signal,
       );
       
-      typewriter.finish();
-      
       // 更新 AI 解读
       onUpdate({
         ...book,
