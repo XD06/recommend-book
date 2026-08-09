@@ -68,11 +68,13 @@ function writeSSE(res: Response, data: any): void {
  */
 function createRequestAbort(_req: Request, res: Response): AbortSignal {
   const controller = new AbortController();
-  // 只监听 res.on('close') — 客户端断开 SSE 连接时触发
-  // 不能监听 req.on('close') — 在 Node.js 中，express.json() 解析完 body 后
-  // req 流被消费，close 事件就会触发，导致 signal 被立即 abort
+  let responseFinished = false;
+  // finish: res.end() 调用后触发（正常结束）
+  res.on('finish', () => { responseFinished = true; });
+  // close: 连接关闭时触发（可能是正常结束后，也可能是客户端断开）
+  // 只有在非正常结束时才 abort
   res.on('close', () => {
-    if (!controller.signal.aborted) {
+    if (!responseFinished && !controller.signal.aborted) {
       console.log('[AI] 客户端断开连接，abort AI 调用');
       controller.abort();
     }
@@ -299,6 +301,7 @@ initSSE(res);
     res.end();
   } catch (error: any) {
     if (signal.aborted) return;
+    console.error('[AI] insight/stream 错误:', error.message);
     writeSSE(res, { type: 'error', message: error.message });
     res.end();
   }

@@ -31,6 +31,7 @@ import {
 
 interface BookDetailProps {
   book: Book;
+  books: Book[];
   onClose: () => void;
   onUpdate: (updatedBook: Book) => void;
 }
@@ -47,7 +48,7 @@ const levelColors: Record<BookLevel, string> = {
   [BookLevel.EXPERT]: 'bg-danger-50 text-danger-700 border-danger-200',
 };
 
-export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate }) => {
+export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, onUpdate }) => {
   const { showSuccess, showError } = useToast();
   const [isActivating, setIsActivating] = useState(false);
   const [activeTab, setActiveTab] = useState<'insight' | 'progress' | 'douban'>('insight');
@@ -132,6 +133,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
           subcategory: book.subcategory,
           totalPages: parseInt(totalPagesInput) || doubanData?.pages || 300,
           doubanData: doubanDataForAI,
+          library: books,
         },
         {
           onPhase: (phase) => ai.handlePhase(phase),
@@ -568,6 +570,26 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
                           {new Date(book.userData.completionDate || '').toLocaleDateString()}
                         </span>
                       </motion.div>
+                    )}
+
+                    {/* 取消阅读 */}
+                    {book.status === BookStatus.READING && (
+                      <div className="flex justify-end">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            onUpdate({
+                              ...book,
+                              status: BookStatus.UNREAD,
+                              userData: undefined,
+                            });
+                          }}
+                          className="text-zinc-400 hover:text-danger-600"
+                        >
+                          取消阅读
+                        </Button>
+                      </div>
                     )}
                   </motion.div>
                 )}

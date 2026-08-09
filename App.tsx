@@ -361,6 +361,7 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
         {selectedBook && (
           <BookDetail
             book={selectedBook}
+            books={books}
             onClose={() => setSelectedBook(null)}
             onUpdate={handleBookUpdate}
           />
