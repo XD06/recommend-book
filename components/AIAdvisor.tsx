@@ -39,15 +39,36 @@ const levelText: Record<string, string> = {
 };
 
 export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAddBook }) => {
+  const storageKey = 'ai-advisor-chat';
   const [request, setRequest] = useState('');
   const [selectedMood, setSelectedMood] = useState<ReadingMood | null>(null);
   const [loading, setLoading] = useState(false);
-  const [history, setHistory] = useState<ChatTurn[]>([]);
+  const [history, setHistory] = useState<ChatTurn[]>(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const abortRef = useRef<AbortController | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const ai = useAIActivity();
+
+  // 持久化对话历史到 localStorage
+  useEffect(() => {
+    try {
+      if (history.length > 0) {
+        localStorage.setItem(storageKey, JSON.stringify(history.slice(-10)));
+      } else {
+        localStorage.removeItem(storageKey);
+      }
+    } catch {
+      // localStorage 可能已满，忽略
+    }
+  }, [history, storageKey]);
 
   const handleConsult = async () => {
     if (!request.trim() && !selectedMood) return;

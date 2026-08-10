@@ -174,39 +174,69 @@ export const AIActivityPanel: React.FC<AIActivityPanelProps> = ({
             animate={{ rotate: 360 }}
             transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
           />
-          <span className="text-xs">已接收 {receivedChars} 字符</span>
+          <span className="text-xs">正在生成回复 · 已接收 {receivedChars} 字符</span>
         </motion.div>
       )}
 
-      {/* 思考阶段但没有工具调用时 */}
+      {/* 生成阶段 — 推理内容可折叠查看 */}
+      {phase === 'generating' && reasoningText && (
+        <details className="group ml-7 mr-2 rounded-lg bg-white/50 p-2">
+          <summary className="flex items-center gap-1.5 cursor-pointer text-[10px] text-zinc-400 hover:text-zinc-600 transition-colors select-none">
+            <Brain size={10} weight="fill" />
+            <span>查看思考过程（{reasoningText.length} 字）</span>
+          </summary>
+          <p className="mt-1.5 text-[11px] text-zinc-500 leading-relaxed whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+            {reasoningText.slice(-500)}
+          </p>
+        </details>
+      )}
+
+      {/* 思考阶段 — 无工具调用时的明显动画 */}
       {phase === 'thinking' && toolCalls.length === 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center gap-2.5 pl-7"
+        >
+          {/* 三个弹跳点 */}
+          <div className="flex items-center gap-1">
+            {[0, 1, 2].map((i) => (
+              <motion.span
+                key={i}
+                className="w-2 h-2 rounded-full bg-accent-400"
+                animate={{ y: [0, -6, 0], opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+              />
+            ))}
+          </div>
+          <span className="text-xs text-zinc-500 font-medium">
+            {elapsedTime > 10 ? '正在深度思考…' : elapsedTime > 5 ? '正在分析你的书库…' : '正在理解你的需求…'}
+          </span>
+        </motion.div>
+      )}
+
+      {/* 思考阶段 — 有推理内容时显示摘要 */}
+      {phase === 'thinking' && reasoningText && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="flex items-center gap-2 pl-7 text-zinc-400"
+          className="ml-7 mr-2 rounded-lg bg-white/70 border border-zinc-200/50 p-2.5"
         >
-          <motion.div
-            className="w-4 h-4 border-2 border-zinc-200 border-t-accent-500 rounded-full"
-            animate={{ rotate: 360 }}
-            transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
-          />
-          <span className="text-xs">正在分析请求...</span>
-        </motion.div>
-      )}
-
-      {/* AI 推理过程 */}
-      {reasoningText && (
-        <details className="group pt-1 border-t border-zinc-200/60" open>
-          <summary className="flex items-center gap-1.5 cursor-pointer text-xs text-zinc-400 hover:text-zinc-600 transition-colors select-none">
-            <Brain size={12} />
-            <span>AI 思考过程</span>
-          </summary>
-          <div className="mt-1.5 max-h-40 overflow-y-auto rounded-lg bg-white/60 p-2">
-            <p className="text-[11px] text-zinc-500 leading-relaxed whitespace-pre-wrap break-words">
-              {reasoningText.slice(-800)}
-            </p>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Brain size={11} className="text-accent-500" weight="fill" />
+            <span className="text-[10px] font-medium text-zinc-400 uppercase tracking-wide">AI 思考中</span>
+            <motion.span
+              className="ml-auto text-[10px] text-zinc-400"
+              animate={{ opacity: [0.3, 1, 0.3] }}
+              transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+            >
+              {reasoningText.length} 字
+            </motion.span>
           </div>
-        </details>
+          <p className="text-[11px] text-zinc-500 leading-relaxed whitespace-pre-wrap break-words line-clamp-3">
+            {reasoningText.slice(-300)}
+          </p>
+        </motion.div>
       )}
 
       {/* 计时 + 取消 */}
