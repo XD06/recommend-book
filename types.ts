@@ -178,17 +178,19 @@ export interface Recommendation {
 }
 
 export interface AdvisorResponse {
-  analysis: string;
-  readingInsight?: string;
-  recommendationStrategy?: string;
-  libraryMatches: {
-    bookId: string;
-    reason: string;
-    timing?: string;
-    prerequisite?: string | null;
-    relevanceScore?: number;
-  }[];
-  externalMatches: Recommendation[];
+mode?: 'conversation' | 'recommendation';
+reply?: string;               // 对话模式回复
+analysis: string;
+readingInsight?: string;
+recommendationStrategy?: string;
+libraryMatches: {
+bookId: string;
+reason: string;
+timing?: string;
+prerequisite?: string | null;
+relevanceScore?: number;
+}[];
+externalMatches: Recommendation[];
 }
 
 export interface DebugLogItem {

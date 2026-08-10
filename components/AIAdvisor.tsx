@@ -9,9 +9,11 @@ import {
 } from '@phosphor-icons/react';
 
 const fallbackResponse: AdvisorResponse = {
-  analysis: 'AI 服务暂时不可用，请稍后重试。',
-  libraryMatches: [],
-  externalMatches: [],
+mode: 'conversation',
+analysis: 'AI 服务暂时不可用，请稍后重试。',
+reply: 'AI 服务暂时不可用，请稍后重试。',
+libraryMatches: [],
+externalMatches: [],
 };
 
 interface AIAdvisorProps {
@@ -91,7 +93,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
       // 构建对话历史
       const conversationHistory = history.flatMap(t => [
         { role: 'user' as const, content: t.userRequest },
-        { role: 'assistant' as const, content: t.result.analysis },
+        { role: 'assistant' as const, content: t.result.mode === 'conversation' ? (t.result.reply || '') : (t.result.analysis || '') },
       ]);
 
       const data = await getRecommendationsStream(
@@ -113,6 +115,12 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
       const finalResult: AdvisorResponse = data || fallbackResponse;
       finalResult.libraryMatches = finalResult.libraryMatches || [];
       finalResult.externalMatches = finalResult.externalMatches || [];
+      // 确保对话模式有 reply，推荐模式有 analysis
+      if (finalResult.mode === 'conversation' && !finalResult.reply) {
+        finalResult.reply = finalResult.analysis || '';
+      } else if (finalResult.mode === 'recommendation' && !finalResult.analysis) {
+        finalResult.analysis = finalResult.reply || '';
+      }
 
       setHistory(prev => [...prev, { userRequest: currentRequest, mood: currentMood, result: finalResult }]);
       setRequest('');
@@ -222,7 +230,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
       </div>
 
       {/* 底部输入区 */}
-      <div className="sticky bottom-0 bg-white/90 backdrop-blur-md pt-4 pb-6 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0">
+      <div className="sticky bottom-0  backdrop-blur-md pt-4 pb-6 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0">
         {/* 心境选择 */}
         <div className="flex flex-wrap gap-1.5 justify-center mb-3">
           {MOOD_OPTIONS.map((mood) => (
@@ -285,6 +293,23 @@ const AdvisorResult: React.FC<{
   onSelectBook: (book: Book) => void;
   onAddBook: (rec: Recommendation) => void;
 }> = ({ result, getLibraryBook, onSelectBook, onAddBook }) => {
+  // 对话模式：简洁的聊天气泡
+  if (result.mode === 'conversation' && result.reply) {
+    return (
+      <div className="flex gap-3">
+        <div className="w-9 h-9 rounded-full bg-zinc-900 text-white flex items-center justify-center shrink-0">
+          <Robot size={18} weight="fill" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="rounded-2xl bg-zinc-100 px-4 py-3">
+            <p className="text-zinc-700 leading-relaxed text-[15px]">{result.reply}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 推荐模式：完整的推荐卡片
   return (
     <div className="space-y-4">
       {/* 顾问洞察 */}

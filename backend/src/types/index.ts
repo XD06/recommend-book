@@ -206,12 +206,16 @@ export interface ChatMessage {
 }
 
 export interface AIResponse {
-  analysis: string;
-  readingInsight?: string;             // 阅读洞察（基于书库的深度观察）
-  recommendationStrategy?: string;     // 推荐策略说明
-  libraryMatches: LibraryMatch[];
-  externalMatches: ExternalRecommendation[];
-  suggestedQuestions?: string[];       // 建议的后续问题
+mode: 'conversation' | 'recommendation';
+// 对话模式
+reply?: string;                // 自然语言回复
+// 推荐模式
+analysis?: string;
+readingInsight?: string;             // 阅读洞察（基于书库的深度观察）
+recommendationStrategy?: string;     // 推荐策略说明
+libraryMatches?: LibraryMatch[];
+externalMatches?: ExternalRecommendation[];
+suggestedQuestions?: string[];       // 建议的后续问题
 }
 
 export interface LibraryMatch {
