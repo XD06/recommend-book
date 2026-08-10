@@ -130,7 +130,7 @@ function createIdleAbortSignal(externalSignal?: AbortSignal): { signal: AbortSig
 // LiteLLM 流式 HTTP 调用（支持 tool_calls 收集）
 // ============================================================================
 
-async function callLiteLLM(body: any, externalSignal?: AbortSignal): Promise<any> {
+async function callLiteLLM(body: any, externalSignal?: AbortSignal, onReasoning?: (chunk: string) => void): Promise<any> {
   const url = process.env.LITELLM_BASE_URL!.replace(/\/$/, '') + '/chat/completions';
   const apiKey = process.env.LITELLM_API_KEY!;
 
@@ -204,6 +204,8 @@ async function callLiteLLM(body: any, externalSignal?: AbortSignal): Promise<any
             // 处理推理模型的 reasoning_content（如 deepseek-v4-flash-plus）
             if (delta?.reasoning_content) {
               reasoningContent += delta.reasoning_content;
+              // 实时推送推理内容到前端，避免 Phase 1 阶段用户看不到任何进展
+              onReasoning?.(delta.reasoning_content);
             }
             // 收集 tool_calls 增量
             if (delta?.tool_calls) {
@@ -530,7 +532,8 @@ async function callAIWithTools(
   messages: any[],
   tools: any[],
   temperature: number = 0.7,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onReasoning?: (chunk: string) => void,
 ): Promise<{ content: string | null; tool_calls?: any[] }> {
   return callWithRetry(async (model: string) => {
     if (isLiteLLM()) {
@@ -539,7 +542,7 @@ async function callAIWithTools(
         messages,
         tools,
         temperature,
-      }, signal);
+      }, signal, onReasoning);
       const msg = response.choices[0]?.message;
       return {
         content: msg?.content || null,
@@ -638,7 +641,7 @@ async function callAgentStream(
     const roundStart = Date.now();
     let response: { content: string | null; tool_calls?: any[] };
     try {
-      response = await callAIWithTools(messages, tools, temperature, signal);
+      response = await callAIWithTools(messages, tools, temperature, signal, onReasoning);
     } catch (e: any) {
       if (e?.name === 'AbortError') throw e;
       console.error(`[AI] Agent round ${round + 1} 调用失败:`, e.message);
@@ -713,9 +716,27 @@ async function callAgentStream(
   console.log('[AI] Agent Phase 2: 生成最终回复 (generating)');
   onPhase?.('generating');
 
-  // 如果 Phase 1 的最后一轮已经有内容，且不需要 JSON 格式，直接以模拟流式方式输出
-  if (lastContent && lastContent.trim().length > 0 && !jsonMode) {
-    return streamText(lastContent, onChunk);
+  // 如果 Phase 1 的最后一轮已经生成了完整内容，直接输出（跳过 Phase 2 冗余调用）
+  if (lastContent && lastContent.trim().length > 0) {
+    if (jsonMode) {
+      // JSON 模式：验证 Phase 1 内容是否可解析为 JSON
+      const trimmed = lastContent.trim();
+      const firstBrace = trimmed.indexOf('{');
+      const lastBrace = trimmed.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1) {
+        try {
+          JSON.parse(trimmed.substring(firstBrace, lastBrace + 1));
+          console.log('[AI] Phase 1 已生成有效 JSON，跳过 Phase 2');
+          return streamText(lastContent, onChunk);
+        } catch {
+          console.log('[AI] Phase 1 内容非有效 JSON，进入 Phase 2 重新生成');
+        }
+      } else {
+        console.log('[AI] Phase 1 内容不含 JSON 结构，进入 Phase 2 重新生成');
+      }
+    } else {
+      return streamText(lastContent, onChunk);
+    }
   }
 
   // 否则，追加一条 user 消息，引导 AI 生成最终回复
