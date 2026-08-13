@@ -6,6 +6,7 @@ import { getRecommendationsStream } from '../services/geminiService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import {
   Sparkle, PaperPlaneTilt, Plus, Star, Robot, Stack, Lightbulb, Clock, Eye, CheckCircle,
+  BookOpen, Books, Coffee,
 } from '@phosphor-icons/react';
 
 const fallbackResponse: AdvisorResponse = {
@@ -38,6 +39,12 @@ const levelText: Record<string, string> = {
   'Basic': '入门',
   'Advanced': '进阶',
   'Expert': '专家',
+};
+
+const roleConfig: Record<string, { label: string; icon: any; color: string; bg: string; border: string }> = {
+  primary:           { label: '主书',   icon: BookOpen, color: 'text-accent-700',   bg: 'bg-accent-50',    border: 'border-accent-200' },
+  complement:         { label: '补充',   icon: Books,    color: 'text-blue-700',     bg: 'bg-blue-50',      border: 'border-blue-200' },
+  palate_cleanser:    { label: '放松',   icon: Coffee,   color: 'text-amber-700',    bg: 'bg-amber-50',     border: 'border-amber-200' },
 };
 
 export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAddBook }) => {
@@ -349,12 +356,18 @@ const AdvisorResult: React.FC<{
             {result.libraryMatches.map((match, idx) => {
               const book = getLibraryBook(match.bookId);
               if (!book) return null;
+              const role = match.role ? roleConfig[match.role] : null;
               return (
                 <div
                   key={idx}
                   onClick={() => onSelectBook(book)}
-                  className="group cursor-pointer rounded-xl border border-zinc-200 bg-white p-4 hover:border-zinc-300 hover:shadow-card-hover transition-[border-color,box-shadow] duration-200"
+                  className={`group cursor-pointer rounded-xl border bg-white p-4 hover:shadow-card-hover transition-[border-color,box-shadow] duration-200 ${role ? role.border : 'border-zinc-200 hover:border-zinc-300'}`}
                 >
+                  {role && (
+                    <div className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold mb-2 ${role.bg} ${role.color}`}>
+                      <role.icon size={11} weight="fill" /> {role.label}
+                    </div>
+                  )}
                   <div className="flex gap-3">
                     {hasBookCover(book) ? (
                       <img
@@ -399,8 +412,15 @@ const AdvisorResult: React.FC<{
             <span className="badge bg-zinc-100 text-zinc-600">{result.externalMatches.length} 本</span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {result.externalMatches.map((rec, idx) => (
-              <div key={idx} className="rounded-xl border border-zinc-200 bg-white p-4 flex flex-col hover:border-zinc-300 hover:shadow-card-hover transition-[border-color,box-shadow] duration-200">
+            {result.externalMatches.map((rec, idx) => {
+              const role = rec.role ? roleConfig[rec.role] : null;
+              return (
+              <div key={idx} className={`rounded-xl border bg-white p-4 flex flex-col hover:shadow-card-hover transition-[border-color,box-shadow] duration-200 ${role ? role.border : 'border-zinc-200 hover:border-zinc-300'}`}>
+                {role && (
+                  <div className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold mb-2 self-start ${role.bg} ${role.color}`}>
+                    <role.icon size={11} weight="fill" /> {role.label}
+                  </div>
+                )}
                 <h4 className="font-semibold text-sm text-zinc-900 leading-snug mb-0.5 line-clamp-2">{rec.title}</h4>
                 <p className="text-xs text-zinc-400 mb-2">{rec.author}</p>
                 <div className="flex flex-wrap gap-1 mb-3">
@@ -429,7 +449,8 @@ const AdvisorResult: React.FC<{
                   <Plus size={14} /> 加入书库
                 </Button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

@@ -36,31 +36,34 @@ export interface Book {
   title: string;
   author: string;
   publisher?: string;
-  
+
   // 分类系统（支持多级）
   category: string;        // 一级分类：领域/学科
   subcategory: string;     // 二级分类：具体主题
   tags?: string[];         // 标签：更细粒度的标记
-  
+
   level: BookLevel;
   status: BookStatus;
   userData?: UserProgress;
   aiInsight?: AIInsight;
-  
+
   // 封面（生成色或真实图片）
   coverColor?: string;
   coverUrl?: string;
-  
+
   // 评分
   rating?: number;         // 用户评分
   doubanRating?: number;   // 豆瓣评分
-  
+
+  // 阅读笔记（用户记录的思考、感悟、问题）
+  notes?: string[];
+
   // 豆瓣数据（Phase 2）
   doubanId?: string;
   isbn?: string;
   publishYear?: string;
   doubanData?: DoubanBookData;
-  
+
   // 元数据
   createdAt: string;
   updatedAt: string;
@@ -224,6 +227,7 @@ export interface LibraryMatch {
   relevanceScore: number;      // 0-1 相关度评分
   timing?: string;             // 为什么是现在读
   prerequisite?: string | null; // 前置阅读要求
+  role?: 'primary' | 'complement' | 'palate_cleanser';  // 三层推荐角色
 }
 
 export interface ExternalRecommendation {
@@ -237,6 +241,7 @@ export interface ExternalRecommendation {
   rating?: number;
   doubanId?: string;
   confidence?: 'high' | 'medium' | 'low';  // 推荐可信度
+  role?: 'primary' | 'complement' | 'palate_cleanser';  // 三层推荐角色
 }
 
 // ============================================================================

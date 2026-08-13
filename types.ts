@@ -175,6 +175,7 @@ export interface Recommendation {
   subcategory?: string;
   rating?: number;
   confidence?: 'high' | 'medium' | 'low';
+  role?: 'primary' | 'complement' | 'palate_cleanser';
 }
 
 export interface AdvisorResponse {
@@ -189,6 +190,7 @@ reason: string;
 timing?: string;
 prerequisite?: string | null;
 relevanceScore?: number;
+role?: 'primary' | 'complement' | 'palate_cleanser';
 }[];
 externalMatches: Recommendation[];
 }
