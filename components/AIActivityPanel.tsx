@@ -192,7 +192,7 @@ export const AIActivityPanel: React.FC<AIActivityPanelProps> = ({
       )}
 
       {/* 思考阶段 — 无工具调用时的明显动画 */}
-      {phase === 'thinking' && toolCalls.length === 0 && (
+      {phase === 'thinking' && toolCalls.length === 0 && !reasoningText && (
         <motion.div
           initial={{ opacity: 0, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
@@ -215,7 +215,7 @@ export const AIActivityPanel: React.FC<AIActivityPanelProps> = ({
         </motion.div>
       )}
 
-      {/* 思考阶段 — 有推理内容时显示摘要 */}
+      {/* 思考阶段 — 有推理内容时显示实时推理（替代弹跳点动画） */}
       {phase === 'thinking' && reasoningText && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -233,9 +233,32 @@ export const AIActivityPanel: React.FC<AIActivityPanelProps> = ({
               {reasoningText.length} 字
             </motion.span>
           </div>
-          <p className="text-[11px] text-zinc-500 leading-relaxed whitespace-pre-wrap break-words line-clamp-3">
-            {reasoningText.slice(-300)}
+          <p className="text-[11px] text-zinc-500 leading-relaxed whitespace-pre-wrap break-words line-clamp-4">
+            {reasoningText.slice(-400)}
           </p>
+        </motion.div>
+      )}
+
+      {/* 思考阶段 — 有工具调用但无推理时的弹跳点 */}
+      {phase === 'thinking' && toolCalls.length > 0 && !reasoningText && (
+        <motion.div
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center gap-2.5 pl-7"
+        >
+          <div className="flex items-center gap-1">
+            {[0, 1, 2].map((i) => (
+              <motion.span
+                key={i}
+                className="w-2 h-2 rounded-full bg-accent-400"
+                animate={{ y: [0, -6, 0], opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 0.8, repeat: Infinity, delay: i * 0.15, ease: 'easeInOut' }}
+              />
+            ))}
+          </div>
+          <span className="text-xs text-zinc-500 font-medium">
+            {elapsedTime > 10 ? '正在深度思考…' : '正在分析你的书库…'}
+          </span>
         </motion.div>
       )}
 

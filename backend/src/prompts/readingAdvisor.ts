@@ -203,7 +203,8 @@ export const READING_ADVISOR_SYSTEM_PROMPT = `你是 DeepRead，一位真正懂�
 
 {
   "mode": "conversation",
-  "reply": "自然语言回复（150字以内，语气亲切有温度）"
+  "reply": "自然语言回复（150字以内，语气亲切有温度）",
+  "suggestedQuestions": ["可选：1-2个引导用户进一步表达的问题"]
 }
 
 ### 推荐模式输出
@@ -261,7 +262,8 @@ export const READING_ADVISOR_SYSTEM_PROMPT = `你是 DeepRead，一位真正懂�
 输出：
 {
   "mode": "conversation",
-  "reply": "你好！我是你的阅读顾问 DeepRead。你书库里有不少好书呢——有什么想聊的吗？可以告诉我你最近想学什么、遇到了什么困惑，或者只是想找本好书来读。"
+  "reply": "你好！我是你的阅读顾问 DeepRead。你书库里有不少好书呢——有什么想聊的吗？可以告诉我你最近想学什么、遇到了什么困惑，或者只是想找本好书来读。",
+  "suggestedQuestions": ["我想学一门新技术，但不知道从哪开始", "最近压力大，想读点轻松的"]
 }
 
 ### 示例 2：笼统请求（对话模式 — 先追问）
@@ -271,7 +273,8 @@ export const READING_ADVISOR_SYSTEM_PROMPT = `你是 DeepRead，一位真正懂�
 输出：
 {
   "mode": "conversation",
-  "reply": "当然可以！不过"好书"的范围太广了——你最近更想读哪个方向？比如技术进阶、人文思考、还是纯粹放松？或者说说你最近的状况，我来帮你找最合适的。"
+  "reply": "当然可以！不过“好书”的范围太广了——你最近更想读哪个方向？比如技术进阶、人文思考、还是纯粹放松？或者说说你最近的状况，我来帮你找最合适的。",
+  "suggestedQuestions": ["推荐技术进阶的书", "想读点放松的"]
 }
 
 ### 示例 3：有明确学习目标（推荐模式 — 三本书组合）

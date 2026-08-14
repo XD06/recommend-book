@@ -97,11 +97,21 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
         : '';
       const fullRequest = moodContext + (currentRequest || MOOD_OPTIONS.find(m => m.value === currentMood)?.description || '');
 
-      // 构建对话历史
-      const conversationHistory = history.flatMap(t => [
-        { role: 'user' as const, content: t.userRequest },
-        { role: 'assistant' as const, content: t.result.mode === 'conversation' ? (t.result.reply || '') : (t.result.analysis || '') },
-      ]);
+      // 构建对话历史（传递完整上下文，让 AI 记住上次推荐了什么）
+      const conversationHistory = history.flatMap(t => {
+        const assistantContent = t.result.mode === 'conversation'
+          ? (t.result.reply || '')
+          : [
+              t.result.analysis || '',
+              t.result.recommendationStrategy || '',
+              ...(t.result.libraryMatches || []).map(m => `书库推荐: 《${m.bookId}》(${m.role || 'unknown'}) - ${m.reason}`),
+              ...(t.result.externalMatches || []).map(r => `外部推荐: 《${r.title}》-${r.author} (${r.role || 'unknown'}) - ${r.reason}`),
+            ].join('\n');
+        return [
+          { role: 'user' as const, content: t.userRequest },
+          { role: 'assistant' as const, content: assistantContent },
+        ];
+      });
 
       const data = await getRecommendationsStream(
         {
@@ -173,7 +183,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
         </h2>
         {isInitial && (
           <p className="text-zinc-500 text-sm mt-2 max-w-md mx-auto leading-relaxed">
-            告诉我你的心境、目标或困惑，我会从你的书库和全网为你找到最合适的书。
+            告诉我你的心境、目标或困惑。我会基于你的书库为你设计「主书 + 补充 + 放松」三层阅读组合——不只是推书，而是帮你规划这段时间的阅读路径。
           </p>
         )}
       </div>
@@ -198,6 +208,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
               getLibraryBook={getLibraryBook}
               onSelectBook={onSelectBook}
               onAddBook={onAddBook}
+              onQuickReply={(text) => { setRequest(text); inputRef.current?.focus(); }}
             />
           </div>
         ))}
@@ -266,7 +277,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
             ref={inputRef}
             value={request}
             onChange={(e) => setRequest(e.target.value)}
-            placeholder={history.length > 0 ? '继续追问…' : '例如：我刚升职做技术管理，有点手忙脚乱...'}
+            placeholder={history.length > 0 ? '继续追问…' : '例如：我想学 Rust，但不知道从哪里开始…'}
             className="w-full bg-white border border-zinc-200 rounded-xl resize-none text-sm text-zinc-900 placeholder:text-zinc-400 shadow-subtle p-4 pr-14 h-14"
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleConsult(); } }}
             disabled={loading}
@@ -299,7 +310,8 @@ const AdvisorResult: React.FC<{
   getLibraryBook: (id: string) => Book | undefined;
   onSelectBook: (book: Book) => void;
   onAddBook: (rec: Recommendation) => void;
-}> = ({ result, getLibraryBook, onSelectBook, onAddBook }) => {
+  onQuickReply?: (text: string) => void;
+}> = ({ result, getLibraryBook, onSelectBook, onAddBook, onQuickReply }) => {
   // 对话模式：简洁的聊天气泡
   if (result.mode === 'conversation' && result.reply) {
     return (
@@ -307,10 +319,23 @@ const AdvisorResult: React.FC<{
         <div className="w-9 h-9 rounded-full bg-zinc-900 text-white flex items-center justify-center shrink-0">
           <Robot size={18} weight="fill" />
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 space-y-2">
           <div className="rounded-2xl bg-zinc-100 px-4 py-3">
             <p className="text-zinc-700 leading-relaxed text-[15px]">{result.reply}</p>
           </div>
+          {result.suggestedQuestions && result.suggestedQuestions.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {result.suggestedQuestions.map((q, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => onQuickReply?.(q)}
+                  className="px-2.5 py-1 rounded-full text-xs font-medium border border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50 active:scale-[0.97] transition-all"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );

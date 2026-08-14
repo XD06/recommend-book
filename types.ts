@@ -193,6 +193,7 @@ relevanceScore?: number;
 role?: 'primary' | 'complement' | 'palate_cleanser';
 }[];
 externalMatches: Recommendation[];
+suggestedQuestions?: string[];
 }
 
 export interface DebugLogItem {
