@@ -186,6 +186,19 @@ export const LIBRARY_TOOLS = [
   {
     type: 'function' as const,
     function: {
+      name: 'get_reading_notes',
+      description: '获取用户在书籍上记录的阅读笔记、思考、感悟或问题。当需要深入了解用户对某本书的思考以提供更个性化的建议时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          bookId: { type: 'string', description: '指定书籍ID（可选，不传则返回所有有笔记的书籍概要）' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'update_book_status',
       description: '更新书籍的阅读状态和进度（写操作）。当用户表示已读完、开始阅读或想更新进度时使用。更新后前端会同步显示新状态。',
       parameters: {
@@ -281,6 +294,8 @@ function describeToolCall(toolName: string, args: Record<string, any>): string {
       return '分析阅读品味画像';
     case 'get_reading_gaps':
       return '分析知识缺口';
+    case 'get_reading_notes':
+      return args.bookId ? `查看阅读笔记` : '查看所有阅读笔记';
     case 'update_book_status': {
       const statusMap: Record<string, string> = { reading: '开始阅读', finished: '读完', unread: '重置为未读' };
       return `更新书籍状态${args.status ? `（${statusMap[args.status] || args.status}）` : ''}`;
@@ -338,6 +353,9 @@ export function executeLibraryTool(
         break;
       case 'get_reading_gaps':
         result = JSON.stringify(getReadingGaps(library));
+        break;
+      case 'get_reading_notes':
+        result = JSON.stringify(getReadingNotes(args, library));
         break;
       case 'update_book_status':
         result = JSON.stringify(updateBookStatus(args, library, onBookUpdate));
@@ -453,6 +471,7 @@ function getBookDetails(args: Record<string, any>, library: Book[]): any[] {
     doubanPublisher: b.doubanData?.publisher,
     doubanPubdate: b.doubanData?.pubdate,
     doubanPages: b.doubanData?.pages,
+    notes: b.notes,
     readingProgress: b.userData ? {
       currentPage: b.userData.currentPage,
       totalPages: b.userData.totalPages,
@@ -704,6 +723,70 @@ function getReadingTasteProfile(library: Book[]): any {
       }
     : null;
 
+  // === 7. 阅读人格推断（深度个性化） ===
+  const readingPersonality = (() => {
+    const finishRate = total > 0 ? finished.length / total : 0;
+    const avgBooksPerCategory = Object.keys(catMap).length > 0 ? total / Object.keys(catMap).length : 0;
+
+    // 完成型 vs 探索型
+    let readerType: string;
+    if (finishRate >= 0.7) readerType = '完成型读者（读完率高，追求闭环）';
+    else if (finishRate < 0.3 && total > 10) readerType = '探索型读者（广泛涉猎，不追求读完）';
+    else readerType = '平衡型读者（既探索也完成）';
+
+    // 深度型 vs 广度型
+    let depthBreadth: string;
+    if (Object.keys(catMap).length <= 2 && avgBooksPerCategory >= 5) depthBreadth = '深度型（聚焦少数领域，深入钻研）';
+    else if (Object.keys(catMap).length >= 6 && avgBooksPerCategory < 3) depthBreadth = '广度型（多领域探索，知识面宽）';
+    else depthBreadth = '均衡型（有主次领域，兼顾深度与广度）';
+
+    // 学习风格推断
+    const theoryKeywords = ['原理', '导论', '理论', '基础', '概论', '思想', '哲学'];
+    const practiceKeywords = ['实战', '实践', '项目', '手册', '案例', '动手', 'cookbook'];
+    const theoryCount = library.filter(b =>
+      theoryKeywords.some(kw => b.title.toLowerCase().includes(kw) || b.subcategory.toLowerCase().includes(kw))
+    ).length;
+    const practiceCount = library.filter(b =>
+      practiceKeywords.some(kw => b.title.toLowerCase().includes(kw) || b.subcategory.toLowerCase().includes(kw))
+    ).length;
+    let learningStyle: string;
+    if (theoryCount > practiceCount * 1.5) learningStyle = '理论优先型（先理解原理再实践）';
+    else if (practiceCount > theoryCount * 1.5) learningStyle = '实践驱动型（边做边学，在实战中理解）';
+    else learningStyle = '理实交融型（理论与实践并重）';
+
+    // 阅读连贯性推断
+    const readingDates = finished
+      .map(b => b.userData?.completionDate)
+      .filter(Boolean)
+      .sort() as string[];
+    let consistency: string;
+    if (readingDates.length >= 3) {
+      const firstDate = new Date(readingDates[0]);
+      const lastDate = new Date(readingDates[readingDates.length - 1]);
+      const totalDays = Math.max(1, Math.round((lastDate.getTime() - firstDate.getTime()) / (1000 * 60 * 60 * 24)));
+      const booksPerMonth = (readingDates.length / totalDays) * 30;
+      if (booksPerMonth >= 3) consistency = `高频阅读者（约${booksPerMonth.toFixed(1)}本/月）`;
+      else if (booksPerMonth >= 1) consistency = `稳定阅读者（约${booksPerMonth.toFixed(1)}本/月）`;
+      else consistency = `间歇阅读者（约${booksPerMonth.toFixed(1)}本/月，可能集中突击）`;
+    } else {
+      consistency = '阅读数据不足，无法判断节奏';
+    }
+
+    // 难度进化路径
+    let difficultyEvolution: string;
+    if (levelDist.Basic > 0 && levelDist.Advanced === 0 && levelDist.Expert === 0) {
+      difficultyEvolution = '入门阶段（全为入门书，尚未向高难度进阶）';
+    } else if (levelDist.Advanced > 0 && levelDist.Expert === 0) {
+      difficultyEvolution = '成长阶段（已从入门进阶到进阶级别）';
+    } else if (levelDist.Expert > 0) {
+      difficultyEvolution = '高阶阶段（已涉猎专家级内容，追求深度）';
+    } else {
+      difficultyEvolution = '未知';
+    }
+
+    return { readerType, depthBreadth, learningStyle, consistency, difficultyEvolution };
+  })();
+
   return {
     knowledgeStructure: {
       totalCategories: Object.keys(catMap).length,
@@ -715,12 +798,15 @@ function getReadingTasteProfile(library: Book[]): any {
     readingPace,
     trajectory,
     ratingTendency,
+    readingPersonality,
     summary: `藏书${total}本（在读${reading.length}、已读${finished.length}、未读${unread.length}），` +
       `主要领域：${topCategories.slice(0, 3).map(c => c.category).join('、')}。` +
       `难度偏好：${preferenceProfile.difficultyPreference}。` +
       `阅读节奏：完成率${readingPace.finishedRate}，` +
       (readingPace.stuckBooks > 0 ? `有${readingPace.stuckBooks}本在读但进度停滞。` : '') +
-      (trajectory.categoryHopping ? trajectory.categoryHopping : ''),
+      (trajectory.categoryHopping ? trajectory.categoryHopping : '') +
+      `\n阅读人格：${readingPersonality.readerType}，${readingPersonality.depthBreadth}，${readingPersonality.learningStyle}。` +
+      `${readingPersonality.consistency}。难度进化：${readingPersonality.difficultyEvolution}。`,
   };
 }
 
@@ -868,6 +954,46 @@ function getReadingGaps(library: Book[]): any {
         : mediumSeverity.length > 0
           ? `发现${mediumSeverity.length}个中等优先级缺口，适当调整阅读方向。`
           : `发现${lowSeverity.length}个小问题，整体阅读状况良好。`,
+  };
+}
+
+// ============================================================================
+// 阅读笔记工具 — 获取用户在书籍上的思考记录
+// ============================================================================
+
+function getReadingNotes(args: Record<string, any>, library: Book[]): any {
+  const { bookId } = args;
+
+  if (bookId) {
+    // 获取特定书籍的笔记
+    const book = library.find(b => b.id === bookId);
+    if (!book) {
+      return { error: `未找到书籍ID: ${bookId}` };
+    }
+    return {
+      bookId: book.id,
+      title: book.title,
+      author: book.author,
+      notes: book.notes || [],
+      noteCount: book.notes?.length || 0,
+    };
+  }
+
+  // 获取所有有笔记的书籍概要
+  const booksWithNotes = library
+    .filter(b => b.notes && b.notes.length > 0)
+    .map(b => ({
+      bookId: b.id,
+      title: b.title,
+      author: b.author,
+      noteCount: b.notes!.length,
+      latestNote: b.notes![b.notes!.length - 1].slice(0, 100),
+    }));
+
+  return {
+    totalBooksWithNotes: booksWithNotes.length,
+    totalNotes: booksWithNotes.reduce((sum, b) => sum + b.noteCount, 0),
+    books: booksWithNotes,
   };
 }
 
@@ -1031,7 +1157,7 @@ export function buildLibraryOverview(library: Book[]): string {
     }
   }
 
-  overview += `\n提示：建议优先使用 get_reading_taste_profile 获取完整品味画像，使用 get_reading_gaps 分析知识缺口。其他工具：搜索书库（含标签搜索）、获取书籍详情（含豆瓣标签和评分）、查看分类统计、查看阅读历史、查看用户画像。`;
+  overview += `\n提示：建议优先使用 get_reading_taste_profile 获取完整品味画像（含阅读人格分析），使用 get_reading_gaps 分析知识缺口，使用 get_reading_notes 查看用户阅读笔记。其他工具：搜索书库（含标签搜索）、获取书籍详情（含豆瓣标签和评分）、查看分类统计、查看阅读历史、查看用户画像。`;
 
   return overview;
 }
@@ -1103,6 +1229,18 @@ function generateCompactTasteProfile(library: Book[]): string | null {
   const topAuthor = Object.entries(authorFreq).find(([_, count]) => count >= 2);
   if (topAuthor) {
     profile += `\n偏好作者: ${topAuthor[0]}（${topAuthor[1]}本）`;
+  }
+
+  // 阅读人格（紧凑版）—— 复用上方已计算的 finishRate（百分比）
+  const finishRatio = total > 0 ? finished.length / total : 0;
+  const personality = finishRatio >= 0.7 ? '完成型' : finishRatio < 0.3 && total > 10 ? '探索型' : '平衡型';
+  const focus = categoryCount <= 2 && total / categoryCount >= 5 ? '深度型' : categoryCount >= 6 ? '广度型' : '均衡型';
+  profile += `\n阅读人格: ${personality}+${focus}`;
+
+  // 笔记数量
+  const notesCount = library.filter(b => b.notes && b.notes.length > 0).length;
+  if (notesCount > 0) {
+    profile += `\n有笔记的书: ${notesCount}本（可使用 get_reading_notes 查看用户思考）`;
   }
 
   return profile;

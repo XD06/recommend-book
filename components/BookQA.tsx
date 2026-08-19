@@ -302,30 +302,32 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
                   />
                   {/* 工具调用历史 + 计时 + 停止 */}
                   <div className="mt-2 pt-2 border-t border-zinc-200/60">
-                    <AIActivityPanel
-                      phase={ai.phase}
-                      toolCalls={ai.toolCalls}
-                      reasoningText={ai.reasoningText}
-                      elapsedTime={ai.elapsedTime}
-                      receivedChars={0}
-                      onCancel={handleStop}
-                      thinkingLabel="正在分析问题"
-                      generatingLabel="正在组织回答"
-                      compact
-                    />
+<AIActivityPanel
+phase={ai.phase}
+toolCalls={ai.toolCalls}
+reasoningText={ai.reasoningText}
+streamingText={ai.streamingText}
+elapsedTime={ai.elapsedTime}
+receivedChars={0}
+onCancel={handleStop}
+thinkingLabel="正在分析问题"
+generatingLabel="正在组织回答"
+compact
+/>
                   </div>
                 </div>
               ) : (
-                <AIActivityPanel
-                  phase={ai.phase}
-                  toolCalls={ai.toolCalls}
-                  reasoningText={ai.reasoningText}
-                  elapsedTime={ai.elapsedTime}
-                  receivedChars={0}
-                  onCancel={handleStop}
-                  thinkingLabel="正在分析问题"
-                  generatingLabel="正在组织回答"
-                />
+<AIActivityPanel
+phase={ai.phase}
+toolCalls={ai.toolCalls}
+reasoningText={ai.reasoningText}
+streamingText={ai.streamingText}
+elapsedTime={ai.elapsedTime}
+receivedChars={0}
+onCancel={handleStop}
+thinkingLabel="正在分析问题"
+generatingLabel="正在组织回答"
+/>
               )}
             </div>
           </motion.div>

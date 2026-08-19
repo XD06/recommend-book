@@ -82,6 +82,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
   const doubanData = book.doubanData;
   
   const handleSaveEdit = () => {
+    const totalPages = parseInt(totalPagesInput) || book.userData?.totalPages || 0;
     onUpdate({
       ...book,
       title: editTitle,
@@ -90,6 +91,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
       category: editCategory,
       subcategory: editSubcategory,
       level: editLevel,
+      userData: book.userData ? { ...book.userData, totalPages } : (totalPages > 0 ? { totalPages, currentPage: 0, progressPercentage: 0 } : undefined),
     });
     setIsEditing(false);
   };
@@ -307,6 +309,36 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
                       <option value={BookLevel.EXPERT}>专家</option>
                     </select>
                   </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">总页数</label>
+                      <input
+                        type="number"
+                        value={totalPagesInput}
+                        onChange={(e) => setTotalPagesInput(e.target.value)}
+                        className="w-full px-3 py-2 text-sm bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-accent-500"
+                        placeholder="如 320"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1">评分 (1-5)</label>
+                      <select
+                        value={book.rating || ''}
+                        onChange={(e) => {
+                          const val = e.target.value ? parseInt(e.target.value) : undefined;
+                          onUpdate({ ...book, rating: val }, true);
+                        }}
+                        className="w-full px-3 py-2 text-sm bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-accent-500"
+                      >
+                        <option value="">未评分</option>
+                        <option value="1">1 星</option>
+                        <option value="2">2 星</option>
+                        <option value="3">3 星</option>
+                        <option value="4">4 星</option>
+                        <option value="5">5 星</option>
+                      </select>
+                    </div>
+                  </div>
                   <div className="flex gap-2 pt-1">
                     <Button size="sm" onClick={handleSaveEdit} leftIcon={<FloppyDisk className="w-4 h-4" />}>
                       保存
@@ -413,7 +445,7 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
                         : 'border-transparent text-zinc-400 hover:text-zinc-600',
                     ].join(' ')}
                   >
-                    {tab === 'insight' ? 'AI 解读' : tab === 'progress' ? '进度追踪' : tab === 'qa' ? '问问答' : '豆瓣数据'}
+                    {tab === 'insight' ? 'AI 解读' : tab === 'progress' ? '进度追踪' : tab === 'qa' ? '书籍问答' : '豆瓣数据'}
                   </button>
                 ))}
               </div>
@@ -614,16 +646,17 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
                         </div>
                         <div className="flex-1 min-w-0">
                           <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">正在生成 AI 解读</h4>
-                          <AIActivityPanel
-                            phase={ai.phase}
-                            toolCalls={ai.toolCalls}
-                            reasoningText={ai.reasoningText}
-                            elapsedTime={ai.elapsedTime}
-                            receivedChars={ai.receivedChars}
-                            onCancel={handleStopInsight}
-                            thinkingLabel="正在分析书籍信息"
-                            generatingLabel="正在生成解读内容"
-                          />
+<AIActivityPanel
+phase={ai.phase}
+toolCalls={ai.toolCalls}
+reasoningText={ai.reasoningText}
+streamingText={ai.streamingText}
+elapsedTime={ai.elapsedTime}
+receivedChars={ai.receivedChars}
+onCancel={handleStopInsight}
+thinkingLabel="正在分析书籍信息"
+generatingLabel="正在生成解读内容"
+/>
                         </div>
                       </div>
                     </div>

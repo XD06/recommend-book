@@ -258,30 +258,32 @@ const ai = useAIActivity();
                   />
                   {/* 工具调用历史 + 计时 + 停止 */}
                   <div className="mt-2 pt-2 border-t border-zinc-200/60">
-                    <AIActivityPanel
-                      phase={ai.phase}
-                      toolCalls={ai.toolCalls}
-                      reasoningText={ai.reasoningText}
-                      elapsedTime={ai.elapsedTime}
-                      receivedChars={0}
-                      onCancel={handleStop}
-                      thinkingLabel="正在分析你的书库"
-                      generatingLabel="正在生成回复"
-                      compact
-                    />
+<AIActivityPanel
+phase={ai.phase}
+toolCalls={ai.toolCalls}
+reasoningText={ai.reasoningText}
+streamingText={ai.streamingText}
+elapsedTime={ai.elapsedTime}
+receivedChars={0}
+onCancel={handleStop}
+thinkingLabel="正在分析你的书库"
+generatingLabel="正在生成回复"
+compact
+/>
                   </div>
                 </div>
               ) : (
-                <AIActivityPanel
-                  phase={ai.phase}
-                  toolCalls={ai.toolCalls}
-                  reasoningText={ai.reasoningText}
-                  elapsedTime={ai.elapsedTime}
-                  receivedChars={0}
-                  onCancel={handleStop}
-                  thinkingLabel="正在分析你的书库"
-                  generatingLabel="正在生成回复"
-                />
+<AIActivityPanel
+phase={ai.phase}
+toolCalls={ai.toolCalls}
+reasoningText={ai.reasoningText}
+streamingText={ai.streamingText}
+elapsedTime={ai.elapsedTime}
+receivedChars={0}
+onCancel={handleStop}
+thinkingLabel="正在分析你的书库"
+generatingLabel="正在生成回复"
+/>
               )}
             </div>
           </motion.div>

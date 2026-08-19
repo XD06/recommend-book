@@ -14,7 +14,6 @@ import {
   PencilSimple,
   Brain,
   StopCircle,
-  PaperPlaneTilt,
   Lightbulb,
 } from '@phosphor-icons/react';
 
@@ -57,6 +56,7 @@ interface AIActivityPanelProps {
   phase: AgentPhase;
   toolCalls: ToolCallRecord[];
   reasoningText: string;
+  streamingText: string;
   elapsedTime: number;
   receivedChars: number;
   onCancel: () => void;
@@ -69,6 +69,7 @@ export const AIActivityPanel: React.FC<AIActivityPanelProps> = ({
   phase,
   toolCalls,
   reasoningText,
+  streamingText,
   elapsedTime,
   receivedChars,
   onCancel,
@@ -162,19 +163,29 @@ export const AIActivityPanel: React.FC<AIActivityPanelProps> = ({
         })}
       </AnimatePresence>
 
-      {/* 生成阶段进度 */}
+      {/* 生成阶段进度 + 流式文本预览 */}
       {phase === 'generating' && receivedChars > 0 && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="flex items-center gap-2 pl-7 text-zinc-400"
+          className="space-y-2"
         >
-          <motion.div
-            className="w-4 h-4 border-2 border-zinc-200 border-t-accent-500 rounded-full"
-            animate={{ rotate: 360 }}
-            transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
-          />
-          <span className="text-xs">正在生成回复 · 已接收 {receivedChars} 字符</span>
+          <div className="flex items-center gap-2 pl-7 text-zinc-400">
+            <motion.div
+              className="w-4 h-4 border-2 border-zinc-200 border-t-accent-500 rounded-full"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
+            />
+            <span className="text-xs">正在生成回复 · 已接收 {receivedChars} 字符</span>
+          </div>
+          {/* 流式文本预览 — 让用户实时看到 AI 正在生成的内容 */}
+          {streamingText && (
+            <div className="ml-7 mr-2 rounded-lg bg-white/60 border border-zinc-200/40 p-2.5">
+              <p className="text-[11px] text-zinc-500 leading-relaxed whitespace-pre-wrap break-words line-clamp-6">
+                {streamingText.slice(-600)}
+              </p>
+            </div>
+          )}
         </motion.div>
       )}
 
@@ -289,6 +300,7 @@ export function useAIActivity() {
   const [phase, setPhase] = useState<AgentPhase>(null);
   const [toolCalls, setToolCalls] = useState<ToolCallRecord[]>([]);
   const [reasoningText, setReasoningText] = useState('');
+  const [streamingText, setStreamingText] = useState('');
   const [elapsedTime, setElapsedTime] = useState(0);
   const [receivedChars, setReceivedChars] = useState(0);
   const startTimeRef = useRef<number>(0);
@@ -298,6 +310,7 @@ export function useAIActivity() {
     setPhase(null);
     setToolCalls([]);
     setReasoningText('');
+    setStreamingText('');
     setElapsedTime(0);
     setReceivedChars(0);
     if (timerRef.current) {
@@ -344,6 +357,7 @@ export function useAIActivity() {
 
   const handleChunk = useCallback((chunk: string) => {
     setReceivedChars(prev => prev + chunk.length);
+    setStreamingText(prev => (prev + chunk).slice(-2000));
   }, []);
 
   // 组件卸载时清理
@@ -359,6 +373,7 @@ export function useAIActivity() {
     phase,
     toolCalls,
     reasoningText,
+    streamingText,
     elapsedTime,
     receivedChars,
     reset,

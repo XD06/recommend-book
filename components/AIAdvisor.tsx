@@ -6,7 +6,7 @@ import { getRecommendationsStream } from '../services/geminiService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import {
   Sparkle, PaperPlaneTilt, Plus, Star, Robot, Stack, Lightbulb, Clock, Eye, CheckCircle,
-  BookOpen, Books, Coffee,
+  BookOpen, Books, Coffee, Trash,
 } from '@phosphor-icons/react';
 
 const fallbackResponse: AdvisorResponse = {
@@ -65,6 +65,11 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const ai = useAIActivity();
+
+  const handleClearHistory = () => {
+    setHistory([]);
+    localStorage.removeItem(storageKey);
+  };
 
   // 持久化对话历史到 localStorage
   useEffect(() => {
@@ -142,6 +147,10 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
       setHistory(prev => [...prev, { userRequest: currentRequest, mood: currentMood, result: finalResult }]);
       setRequest('');
       setSelectedMood(null);
+      // 重置输入框高度
+      if (inputRef.current) {
+        inputRef.current.style.height = '56px';
+      }
     } catch (e: any) {
       if (e?.name !== 'AbortError') {
         setHistory(prev => [...prev, { userRequest: currentRequest, mood: currentMood, result: fallbackResponse }]);
@@ -235,6 +244,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
                   phase={ai.phase}
                   toolCalls={ai.toolCalls}
                   reasoningText={ai.reasoningText}
+                  streamingText={ai.streamingText}
                   elapsedTime={ai.elapsedTime}
                   receivedChars={ai.receivedChars}
                   onCancel={handleStop}
@@ -248,8 +258,8 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
       </div>
 
       {/* 底部输入区 */}
-      <div className="sticky bottom-0  backdrop-blur-md pt-4 pb-6 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0">
-        {/* 心境选择 */}
+      <div className="sticky bottom-0 bg-zinc-50/80 backdrop-blur-md pt-4 pb-6 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0 border-t border-zinc-200/50">
+        {/* 心境选择 + 清空对话 */}
         <div className="flex flex-wrap gap-1.5 justify-center mb-3">
           {MOOD_OPTIONS.map((mood) => (
             <button
@@ -269,6 +279,15 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
               {mood.label}
             </button>
           ))}
+          {history.length > 0 && !loading && (
+            <button
+              onClick={handleClearHistory}
+              className="px-2.5 py-1 rounded-full text-xs font-medium border border-transparent text-zinc-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all active:scale-[0.97] flex items-center gap-1"
+            >
+              <Trash size={12} />
+              清空对话
+            </button>
+          )}
         </div>
 
         {/* 输入框 */}
@@ -276,9 +295,16 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
           <textarea
             ref={inputRef}
             value={request}
-            onChange={(e) => setRequest(e.target.value)}
+            onChange={(e) => {
+              setRequest(e.target.value);
+              // 自动调整高度
+              const el = e.target;
+              el.style.height = 'auto';
+              el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+            }}
             placeholder={history.length > 0 ? '继续追问…' : '例如：我想学 Rust，但不知道从哪里开始…'}
-            className="w-full bg-white border border-zinc-200 rounded-xl resize-none text-sm text-zinc-900 placeholder:text-zinc-400 shadow-subtle p-4 pr-14 h-14"
+            className="w-full bg-white border border-zinc-200 rounded-xl resize-none text-sm text-zinc-900 placeholder:text-zinc-400 shadow-subtle p-4 pr-14 min-h-[56px]"
+            style={{ height: '56px' }}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleConsult(); } }}
             disabled={loading}
             rows={1}

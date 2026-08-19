@@ -297,7 +297,8 @@ async function callAIStream(
   messages: AIMessage[],
   onChunk: (chunk: string) => void,
   temperature: number = 0.7,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onReasoning?: (text: string) => void,
 ): Promise<string> {
   let fullContent = '';
   const { signal: innerSignal, reset: resetIdle, cleanup } = createIdleAbortSignal(signal);
@@ -340,10 +341,16 @@ async function callAIStream(
               if (jsonStr === '[DONE]') continue;
               try {
                 const chunk = JSON.parse(jsonStr);
-                const content = chunk.choices?.[0]?.delta?.content;
+                const delta = chunk.choices?.[0]?.delta;
+                const content = delta?.content;
                 if (content) {
                   fullContent += content;
                   onChunk(content);
+                }
+                // 推送推理内容到前端
+                const reasoning = delta?.reasoning_content;
+                if (reasoning && onReasoning) {
+                  onReasoning(reasoning);
                 }
               } catch {
                 // 忽略解析错误
@@ -365,10 +372,16 @@ async function callAIStream(
       }, { signal: innerSignal }) as any;
 
       for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content;
+        const delta = chunk.choices[0]?.delta;
+        const content = delta?.content;
         if (content) {
           fullContent += content;
           onChunk(content);
+        }
+        // 推送推理内容到前端
+        const reasoning = delta?.reasoning_content;
+        if (reasoning && onReasoning) {
+          onReasoning(reasoning);
         }
       }
     }
@@ -801,10 +814,16 @@ async function callAgentStream(
               if (jsonStr === '[DONE]') continue;
               try {
                 const chunk = JSON.parse(jsonStr);
-                const content = chunk.choices?.[0]?.delta?.content;
+                const delta = chunk.choices?.[0]?.delta;
+                const content = delta?.content;
                 if (content) {
                   fullContent += content;
                   onChunk(content);
+                }
+                // Phase 2 也推送推理内容
+                const reasoning = delta?.reasoning_content;
+                if (reasoning && onReasoning) {
+                  onReasoning(reasoning);
                 }
               } catch {
                 // 忽略解析错误
@@ -843,10 +862,16 @@ async function callAgentStream(
     try {
       const stream = await openai.chat.completions.create(params, { signal: innerSignal }) as any;
       for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content;
+        const delta = chunk.choices[0]?.delta;
+        const content = delta?.content;
         if (content) {
           fullContent += content;
           onChunk(content);
+        }
+        // Phase 2 也推送推理内容
+        const reasoning = delta?.reasoning_content;
+        if (reasoning && onReasoning) {
+          onReasoning(reasoning);
         }
       }
     } catch (e: any) {
@@ -1288,11 +1313,11 @@ READING_ADVISOR_SYSTEM_PROMPT,
     userPrompt += `提示：请优先在该分类范围内推荐，但如发现知识缺口可适当推荐跨分类书籍。\n`;
   }
 
-  // 对话历史（多轮推荐上下文）
+  // 对话历史（多轮推荐上下文）— 保留最近 6 轮，每条最多 300 字
   if (context.conversationHistory && context.conversationHistory.length > 0) {
     userPrompt += `\n【对话历史】\n`;
-    for (const msg of context.conversationHistory.slice(-4)) {
-      userPrompt += `${msg.role === 'user' ? '用户' : '助手'}：${msg.content.slice(0, 150)}\n`;
+    for (const msg of context.conversationHistory.slice(-6)) {
+      userPrompt += `${msg.role === 'user' ? '用户' : '助手'}：${msg.content.slice(0, 300)}\n`;
     }
   }
 
@@ -1331,25 +1356,28 @@ INSIGHT_GENERATOR_SYSTEM_PROMPT,
 `书库信息已在上下文中提供。如需查找相关书籍可使用工具，但已有信息足够时直接生成解读。`,
 );
 
-    let userPrompt = `请为以下书籍生成深度解读：\n\n`;
-    userPrompt += `书名: 《${title}》\n作者: ${author}\n难度: ${level}\n`;
-    if (category) userPrompt += `分类: ${category}${subcategory ? ` > ${subcategory}` : ''}\n`;
-    if (totalPages) userPrompt += `页数: ${totalPages} 页\n`;
-    if (doubanData) {
-      userPrompt += `\n## 豆瓣数据参考\n`;
-      if (doubanData.rating) userPrompt += `豆瓣评分: ${doubanData.rating}/10 (${doubanData.ratingCount || '未知'} 人评价)\n`;
-      if (doubanData.publisher) userPrompt += `出版社: ${doubanData.publisher}\n`;
-      if (doubanData.pubdate) userPrompt += `出版日期: ${doubanData.pubdate}\n`;
-      if (doubanData.summary) {
-        const summary = doubanData.summary.length > 500 ? doubanData.summary.substring(0, 500) + '...' : doubanData.summary;
-        userPrompt += `内容简介: ${summary}\n`;
-      }
-      if (doubanData.tags && doubanData.tags.length > 0) {
-        userPrompt += `标签: ${doubanData.tags.slice(0, 8).join(', ')}\n`;
-      }
-    }
+    // 从书库中提取与当前书籍相关的书（同分类或同子分类）
+    const relatedBooks = library
+      .filter(b => b.category === category || b.subcategory === subcategory)
+      .filter(b => b.title !== title)  // 排除当前书
+      .slice(0, 8)
+      .map(b => ({
+        title: b.title,
+        author: b.author,
+        category: b.category,
+        subcategory: b.subcategory,
+        level: b.level,
+        status: b.status,
+        progress: b.userData?.progressPercentage,
+        aiSummary: b.aiInsight?.summary,
+      }));
+
+    let userPrompt = buildInsightGeneratorUserPrompt({
+      title, author, level, category, subcategory, totalPages, doubanData,
+      relatedBooks,
+    });
     userPrompt += `\n${buildLibraryOverview(library)}`;
-    userPrompt += `\n请结合书库信息生成解读，在建议中可以提及用户书库中的相关书籍。`;
+    userPrompt += `\n请结合书库信息生成解读，在建议中可以提及用户书库中的相关书籍，建立知识连接。`;
 
     const content = await callAgentStream(
       systemPrompt, userPrompt, library, onChunk || (() => {}), 0.4, true,
