@@ -2,8 +2,39 @@
  * 豆瓣 API 代理路由
  */
 
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+
+// ============================================================================
+// 安全辅助函数 — 防止 SSRF
+// ============================================================================
+
+/** 豆瓣图片域名白名单 */
+const DOUBAN_IMAGE_HOSTS = [
+  'img1.doubanio.com',
+  'img2.doubanio.com',
+  'img3.doubanio.com',
+  'img1.douban.com',
+  'img2.douban.com',
+  'img3.douban.com',
+  'book.douban.com',
+];
+
+/**
+ * 验证 URL 是否属于豆瓣图片域名白名单
+ * 防止 SSRF 攻击（用户传入内网地址让服务器请求）
+ */
+function isAllowedImageUrl(urlStr: string): boolean {
+  try {
+    const url = new URL(urlStr);
+    // 只允许 HTTPS
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    // 检查域名白名单
+    return DOUBAN_IMAGE_HOSTS.some(host => url.hostname === host || url.hostname.endsWith('.' + host));
+  } catch {
+    return false;
+  }
+}
 import {
   searchBooks,
   getBookDetail,
@@ -93,6 +124,11 @@ router.get('/cover', async (req, res, next) => {
       throw new AppError(ErrorCode.VALIDATION_ERROR, '图片URL不能为空', 400);
     }
 
+    // SSRF 防护：只允许豆瓣图片域名
+    if (!isAllowedImageUrl(url)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, '不允许的图片URL域名', 403);
+    }
+
     const response = await fetch(url);
     const contentType = response.headers.get('content-type') || 'image/jpeg';
     const arrayBuffer = await response.arrayBuffer();
@@ -113,6 +149,11 @@ router.get('/cover/base64', async (req, res, next) => {
     
     if (!url || typeof url !== 'string') {
       throw new AppError(ErrorCode.VALIDATION_ERROR, '图片URL不能为空', 400);
+    }
+
+    // SSRF 防护：只允许豆瓣图片域名
+    if (!isAllowedImageUrl(url)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, '不允许的图片URL域名', 403);
     }
 
     const response = await fetch(url);

@@ -26,6 +26,7 @@ const LIBRARY_TOOL_DESC = `你拥有一组工具来查询用户书库：
 - get_user_profile: 查看用户画像
 - get_reading_taste_profile: 获取用户阅读品味画像（自动分析的阅读偏好、知识结构、阅读轨迹）
 - get_reading_gaps: 获取知识缺口分析（识别用户知识体系中的薄弱环节）
+- get_reading_notes: 获取用户在书籍上记录的阅读笔记和思考（深入了解用户的内心想法）
 - update_book_status: 更新书籍阅读状态和进度（写操作）`;
 
 /** Web 搜索工具说明（仅在 EXA_API_KEY 配置后启用） */
@@ -85,7 +86,7 @@ export function withTools(
   if (isWebSearchEnabled()) {
     result += WEB_SEARCH_GUIDELINE;
   }
-  result += `\n\n你可以根据需要使用工具查询用户书库，以获得更精准的结果。建议优先使用 get_reading_taste_profile 和 get_reading_gaps 了解用户的阅读品味和知识缺口，这样你的推荐会更加精准和有洞察力。如果书库概览中已有足够信息，可以直接给出回复。如需使用工具，最多 ${maxRounds} 轮即可。`;
+  result += `\n\n你可以根据需要使用工具查询用户书库，以获得更精准的结果。建议优先使用 get_reading_taste_profile 和 get_reading_gaps 了解用户的阅读品味和知识缺口，这样你的推荐会更加精准和有洞察力。如果用户提到了对某本书的思考或感悟，可以使用 get_reading_notes 查看用户的阅读笔记，了解更深层的想法。如果书库概览中已有足够信息，可以直接给出回复。如需使用工具，最多 ${maxRounds} 轮即可。`;
   return result;
 }
 

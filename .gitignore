@@ -18,6 +18,10 @@ backend/data/*.db
 backend/data/*.db-wal
 backend/data/*.db-shm
 
+# 豆瓣本地缓存（含抓取数据，运行时自动生成/使用，禁止入库）
+cache.json
+backend/data/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

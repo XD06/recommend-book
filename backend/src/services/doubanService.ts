@@ -101,29 +101,99 @@ async function saveUserCache(): Promise<void> {
 
 // ============ douban_mini 抓取器集成 ============
 
+/** Python 可用性检查缓存 */
+let pythonChecked = false;
+let pythonAvailable = false;
+
+/** 检查 Python 是否已安装 */
+async function checkPython(): Promise<boolean> {
+  if (pythonChecked) return pythonAvailable;
+  pythonChecked = true;
+  try {
+    const { execFile } = await import('child_process');
+    await new Promise<void>((resolve, reject) => {
+      execFile('python', ['--version'], { timeout: 5000 }, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    pythonAvailable = true;
+    console.log('[Douban] Python 环境检测成功');
+  } catch {
+    // 尝试 python3
+    try {
+      const { execFile } = await import('child_process');
+      await new Promise<void>((resolve, reject) => {
+        execFile('python3', ['--version'], { timeout: 5000 }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      pythonAvailable = true;
+      console.log('[Douban] Python3 环境检测成功');
+    } catch {
+      pythonAvailable = false;
+      console.warn('[Douban] Python 未安装，豆瓣实时抓取功能不可用（缓存仍可使用）');
+    }
+  }
+  return pythonAvailable;
+}
+
+/** 获取 Python 命令名 */
+async function getPythonCmd(): Promise<string> {
+  const isAvail = await checkPython();
+  if (!isAvail) throw new Error('Python 未安装');
+  // 优先使用 python，回退到 python3
+  try {
+    const { execFile } = await import('child_process');
+    await new Promise<void>((resolve, reject) => {
+      execFile('python', ['--version'], { timeout: 3000 }, (err) => {
+        if (err) reject(err); else resolve();
+      });
+    });
+    return 'python';
+  } catch {
+    return 'python3';
+  }
+}
+
+/** 转义字符串用于 Python 字面量（防注入） */
+function escapeForPython(str: string): string {
+  // 只允许字母数字和常见 URL 字符，防止注入
+  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
 /**
  * 调用 Python 抓取器获取书籍详情
  */
 async function scrapeBook(doubanId: string): Promise<CachedBook | null> {
   try {
+    // 检查 Python 环境
+    const pythonCmd = await getPythonCmd();
+
     const { spawn } = await import('child_process');
 
     // 构建 Python 脚本调用
     const scriptPath = path.join(process.cwd(), '..', 'douban_mini', 'scraper.py');
-    
-    // 使用 Python 直接调用抓取函数
+
+    // 转义参数防止命令注入
+    const safeScriptDir = escapeForPython(path.dirname(scriptPath));
+    const safeDoubanId = escapeForPython(doubanId);
+    const safeProxyUrl = PROXY_URL ? escapeForPython(PROXY_URL) : '';
+
+    // 使用 Python 直接调用抓取函数（参数已转义）
     const pythonCode = `
 import asyncio
 import json
 import sys
-sys.path.insert(0, '${path.dirname(scriptPath).replace(/\\/g, '\\\\')}')
+sys.path.insert(0, '${safeScriptDir}')
 from scraper import DoubanMini
 
 async def main():
-    dm = DoubanMini(proxy_url=${PROXY_URL ? `"${PROXY_URL}"` : 'None'}, timeout=15, max_retries=3)
+    dm = DoubanMini(proxy_url=${safeProxyUrl ? `"${safeProxyUrl}"` : 'None'}, timeout=15, max_retries=3)
     await dm.start()
     try:
-        book = await dm.get_book("${doubanId}")
+        book = await dm.get_book("${safeDoubanId}")
         if book:
             print(json.dumps(book.to_dict(), ensure_ascii=False))
         else:
@@ -135,16 +205,16 @@ asyncio.run(main())
 `;
 
     const result = await new Promise<string>((resolve, reject) => {
-      const python = spawn('python', ['-c', pythonCode], {
+      const python = spawn(pythonCmd, ['-c', pythonCode], {
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
       });
-      
+
       let stdout = '';
       let stderr = '';
-      
+
       python.stdout.on('data', (data) => { stdout += data.toString(); });
       python.stderr.on('data', (data) => { stderr += data.toString(); });
-      
+
       python.on('close', (code) => {
         if (code !== 0) {
           reject(new Error(`Python 进程退出码 ${code}: ${stderr}`));

@@ -22,9 +22,10 @@ import { ReadingAssistant } from './ReadingAssistant';
 interface StatsViewProps {
   books: Book[];
   categories: CategoryGroup[];
+  onSelectBook?: (book: Book) => void;
 }
 
-export const StatsView: React.FC<StatsViewProps> = ({ books, categories }) => {
+export const StatsView: React.FC<StatsViewProps> = ({ books, categories, onSelectBook }) => {
   const [showAssistant, setShowAssistant] = useState(false);
   const stats = useMemo(() => {
     const total = books.length;
@@ -159,8 +160,8 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories }) => {
           <ReadingTimeline 
             books={books} 
             onSelectBook={(book) => {
-              // 通过自定义事件通知 App 打开书籍详情
-              window.dispatchEvent(new CustomEvent('openBookDetail', { detail: book }));
+              // 通过 props 回调打开书籍详情
+              onSelectBook?.(book);
             }}
           />
         </motion.div>
@@ -205,7 +206,12 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories }) => {
             {/* 难度说明 */}
             <div className="mt-4 pt-4 border-t border-zinc-100">
               <p className="text-xs text-zinc-500 mb-2">难度级别说明</p>
-              <DifficultyScale currentLevel={BookLevel.BASIC} />
+              <DifficultyScale currentLevel={(() => {
+                const levels = stats.levels;
+                if (levels[BookLevel.EXPERT] >= levels[BookLevel.ADVANCED] && levels[BookLevel.EXPERT] >= levels[BookLevel.BASIC]) return BookLevel.EXPERT;
+                if (levels[BookLevel.ADVANCED] >= levels[BookLevel.BASIC]) return BookLevel.ADVANCED;
+                return BookLevel.BASIC;
+              })()} />
             </div>
           </Card>
 

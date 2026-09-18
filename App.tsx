@@ -9,6 +9,7 @@ import { AIAdvisor } from './components/AIAdvisor';
 import { StatsView } from './components/StatsView';
 import { DataManagement } from './components/DataManagement';
 import { ToastProvider, useToast } from './components/Toast';
+import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
 import { LoginPage } from './components/LoginPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { reorganizeLibrary } from './services/geminiService';
@@ -25,7 +26,8 @@ function useBookLibrary() {
   const [categoryMeta, setCategoryMetaState] = useState<Record<string, CategoryMeta>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveBooksTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isInitialLoad = useRef(true);
 
   // 初始加载（含一次性 localStorage → SQLite 迁移）
@@ -82,9 +84,9 @@ function useBookLibrary() {
   // 防抖保存书库到后端
   const setBooks = useCallback((newBooks: Book[]) => {
     setBooksState(newBooks);
-    // 防抖：500ms 内不重复保存
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
+    // 防抖：500ms 内不重复保存（独立 timer，不与分类元数据共享）
+    if (saveBooksTimerRef.current) clearTimeout(saveBooksTimerRef.current);
+    saveBooksTimerRef.current = setTimeout(async () => {
       try {
         const saved = await saveBooks(newBooks);
         // 静默更新（可能后端做了数据清洗）
@@ -98,8 +100,8 @@ function useBookLibrary() {
   // 防抖保存分类元数据
   const setCategoryMeta = useCallback((newMeta: Record<string, CategoryMeta>) => {
     setCategoryMetaState(newMeta);
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
+    if (saveMetaTimerRef.current) clearTimeout(saveMetaTimerRef.current);
+    saveMetaTimerRef.current = setTimeout(async () => {
       try {
         await saveCategoryMeta(newMeta);
       } catch (err: any) {
@@ -125,6 +127,7 @@ function useBookLibrary() {
 
 const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, onLogout }) => {
   const { showSuccess, showError, showInfo } = useToast();
+  const { confirm } = useConfirm();
   const { books, categoryMeta, loading, error, setBooks, setCategoryMeta, loadFromAPI } = useBookLibrary();
 
   // UI State
@@ -132,6 +135,7 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [showIngestion, setShowIngestion] = useState(false);
   const [isReorganizing, setIsReorganizing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<string>(new Date().toLocaleDateString());
 
   // 组件挂载时从后端加载书库数据
   useEffect(() => {
@@ -151,6 +155,7 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
 
     if (unique.length > 0) {
       setBooks([...books, ...unique]);
+      setLastUpdated(new Date().toLocaleDateString());
       showSuccess(`成功添加 ${unique.length} 本书${duplicates > 0 ? `，跳过 ${duplicates} 本重复` : ''}`);
     } else {
       showInfo('所有书籍已存在，未添加新书');
@@ -175,7 +180,7 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
 
   const handleAddRecommendation = (rec: Recommendation) => {
     if (books.some((b) => b.title.toLowerCase() === rec.title.toLowerCase())) {
-      alert('书库中已存在此书籍。');
+      showError('书库中已存在此书籍');
       return;
     }
     const now = new Date().toISOString();
@@ -197,14 +202,21 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
   };
 
   const handleReorganizeLibrary = async () => {
-    if (!window.confirm('AI 将重新分配所有书籍的分类，确定继续吗？')) return;
+    const ok = await confirm({
+      title: 'AI 智能整理',
+      message: 'AI 将重新分配所有书籍的分类，此操作会修改现有分类结构。确定继续吗？',
+      confirmLabel: '开始整理',
+    });
+    if (!ok) return;
     setIsReorganizing(true);
     try {
       const mapping = await reorganizeLibrary(books);
       setBooks(books.map((b) => { const u = mapping[b.id]; return u ? { ...b, category: u.category, subcategory: u.subcategory } : b; }));
       setCategoryMeta({});
+      setLastUpdated(new Date().toLocaleDateString());
+      showSuccess('书库整理完成');
     } catch (e: any) {
-      alert(`整理失败: ${e.message || '未知错误'}`);
+      showError(`整理失败: ${e.message || '未知错误'}`);
     }
     finally { setIsReorganizing(false); }
   };
@@ -234,14 +246,21 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
 
   const handleImportData = (file: File) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const parsed = JSON.parse(e.target?.result as string);
         if (!parsed.data || !Array.isArray(parsed.data.books)) throw new Error('无效格式');
-        if (window.confirm(`检测到 ${parsed.data.books.length} 本书。导入将覆盖当前数据，确认？`)) {
+        const ok = await confirm({
+          title: '导入数据',
+          message: `检测到 ${parsed.data.books.length} 本书。导入将覆盖当前数据，确认？`,
+          confirmLabel: '覆盖导入',
+          variant: 'danger',
+        });
+        if (ok) {
           setBooks(parsed.data.books);
           setCategoryMeta(parsed.data.categoryMeta || {});
           setActiveTab('library');
+          setLastUpdated(new Date().toLocaleDateString());
           showSuccess(`成功导入 ${parsed.data.books.length} 本书`);
         }
       } catch {
@@ -249,6 +268,27 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
       }
     };
     reader.readAsText(file);
+  };
+
+  const handleClearAllData = async () => {
+    const ok = await confirm({
+      title: '清除所有数据',
+      message: '确定要清除所有数据吗？此操作无法撤销。建议先导出备份。',
+      confirmLabel: '清除所有数据',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    try {
+      // 清除后端数据（发送空数组删除所有书）
+      await saveBooks([]);
+      setBooks([]);
+      setCategoryMeta({});
+      localStorage.clear();
+      showSuccess('所有数据已清除');
+      window.location.reload();
+    } catch (e: any) {
+      showError(`清除失败: ${e.message || '未知错误'}`);
+    }
   };
 
   // 加载状态
@@ -293,6 +333,8 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
           setActiveTab('library');
         }}
         user={user}
+        books={books}
+        onSelectBook={setSelectedBook}
         onLogout={onLogout}
       />
 
@@ -337,16 +379,17 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
                 />
               )}
               {activeTab === 'stats' && (
-                <StatsView books={books} categories={categories} />
+                <StatsView books={books} categories={categories} onSelectBook={setSelectedBook} />
               )}
               {activeTab === 'settings' && (
                 <DataManagement
                   onExport={handleExportData}
                   onImport={handleImportData}
+                  onClearAll={handleClearAllData}
                   stats={{
                     totalBooks: books.length,
                     categoriesCount: categories.length,
-                    lastUpdated: new Date().toLocaleDateString(),
+                    lastUpdated,
                   }}
                   onReorganize={handleReorganizeLibrary}
                   isReorganizing={isReorganizing}
@@ -423,9 +466,11 @@ const App: React.FC = () => {
   // 已登录 → 显示主应用
   return (
     <ToastProvider>
-      <ErrorBoundary>
-        <AppContent user={user} onLogout={handleLogout} />
-      </ErrorBoundary>
+      <ConfirmProvider>
+        <ErrorBoundary>
+          <AppContent user={user} onLogout={handleLogout} />
+        </ErrorBoundary>
+      </ConfirmProvider>
     </ToastProvider>
   );
 };

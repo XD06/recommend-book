@@ -100,10 +100,23 @@ export interface InsightGeneratorInput {
     publisher?: string;
     pubdate?: string;
   };
+  /** 用户书库中相关书籍（用于建立知识连接） */
+  relatedBooks?: Array<{
+    title: string;
+    author: string;
+    category: string;
+    subcategory: string;
+    level: string;
+    status: string;
+    progress?: number;
+    aiSummary?: string;
+  }>;
+  /** 用户阅读水平 */
+  userReadingLevel?: string;
 }
 
 export function buildInsightGeneratorUserPrompt(input: InsightGeneratorInput): string {
-  const { title, author, level, category, subcategory, totalPages, doubanData } = input;
+  const { title, author, level, category, subcategory, totalPages, doubanData, relatedBooks, userReadingLevel } = input;
   
   let prompt = `请为以下书籍生成深度解读：\n\n`;
   prompt += `书名: 《${title}》\n`;
@@ -120,6 +133,11 @@ export function buildInsightGeneratorUserPrompt(input: InsightGeneratorInput): s
   
   if (totalPages) {
     prompt += `页数: ${totalPages} 页\n`;
+  }
+
+  // 用户阅读水平（个性化建议的基础）
+  if (userReadingLevel) {
+    prompt += `用户阅读水平: ${userReadingLevel}\n`;
   }
   
   // 传入豆瓣数据以获得更精准的解读
@@ -144,10 +162,21 @@ export function buildInsightGeneratorUserPrompt(input: InsightGeneratorInput): s
     if (doubanData.tags && doubanData.tags.length > 0) {
       prompt += `标签: ${doubanData.tags.slice(0, 8).join(', ')}\n`;
     }
-    prompt += `\n请结合以上豆瓣数据，生成更准确、更有针对性的阅读指南。`;
+  }
+
+  // 传入用户书库中相关书籍，建立知识连接
+  if (relatedBooks && relatedBooks.length > 0) {
+    prompt += `\n## 用户书库中的相关书籍\n`;
+    prompt += `以下是用户书库中与本书相关的书籍，请在阅读建议中建立知识连接（如"你在读的《X》第Y章和本书的Z概念有关联"）：\n`;
+    relatedBooks.slice(0, 8).forEach((b, i) => {
+      prompt += `${i + 1}. 《${b.title}》- ${b.author} [${b.category}/${b.subcategory}] (${b.level}, ${b.status}`;
+      if (b.progress) prompt += `, 进度${Math.round(b.progress)}%`;
+      prompt += `)\n`;
+      if (b.aiSummary) prompt += `   摘要: ${b.aiSummary.slice(0, 60)}...\n`;
+    });
   }
   
-  prompt += `\n请根据以上信息，生成个性化的阅读指南。`;
+  prompt += `\n请结合以上所有信息，生成真正个性化的阅读指南。关键是要体现你了解这个用户的阅读背景，而不只是给出通用的书籍简介。`;
   
   return prompt;
 }

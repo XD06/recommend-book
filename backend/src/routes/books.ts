@@ -125,22 +125,30 @@ const UPSERT_SQL = `
 // 获取书库（全量）
 // ============================================================================
 
-router.get('/', (req, res) => {
-  const rows = db.prepare('SELECT * FROM books WHERE user_id = ? ORDER BY created_at').all(req.user!.id) as BookRow[];
-  const books = rows.map(rowToBook);
-  res.json({ success: true, data: books });
+router.get('/', (req, res, next) => {
+  try {
+    const rows = db.prepare('SELECT * FROM books WHERE user_id = ? ORDER BY created_at').all(req.user!.id) as BookRow[];
+    const books = rows.map(rowToBook);
+    res.json({ success: true, data: books });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ============================================================================
 // 获取单本书
 // ============================================================================
 
-router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM books WHERE id = ? AND user_id = ?').get(req.params.id, req.user!.id) as BookRow | undefined;
-  if (!row) {
-    throw new AppError('BOOK_NOT_FOUND', '书籍不存在', 404);
+router.get('/:id', (req, res, next) => {
+  try {
+    const row = db.prepare('SELECT * FROM books WHERE id = ? AND user_id = ?').get(req.params.id, req.user!.id) as BookRow | undefined;
+    if (!row) {
+      throw new AppError('BOOK_NOT_FOUND', '书籍不存在', 404);
+    }
+    res.json({ success: true, data: rowToBook(row) });
+  } catch (err) {
+    next(err);
   }
-  res.json({ success: true, data: rowToBook(row) });
 });
 
 // ============================================================================
@@ -151,34 +159,38 @@ const batchSaveSchema = z.object({
   books: z.array(z.any()),
 });
 
-router.post('/batch', (req, res) => {
-  const { books } = batchSaveSchema.parse(req.body);
-  const userId = req.user!.id;
+router.post('/batch', (req, res, next) => {
+  try {
+    const { books } = batchSaveSchema.parse(req.body);
+    const userId = req.user!.id;
 
-  const upsert = db.prepare(UPSERT_SQL);
+    const upsert = db.prepare(UPSERT_SQL);
 
-  // 事务：先删除用户所有书，再批量插入
-  // 这样前端只需要把当前状态全量发过来，后端自动同步
-  const tx = db.transaction((allBooks: any[]) => {
-    // 先删除当前不在列表中的书
-    const newIds = allBooks.map(b => b.id);
-    if (newIds.length > 0) {
-      const placeholders = newIds.map(() => '?').join(',');
-      db.prepare(`DELETE FROM books WHERE user_id = ? AND id NOT IN (${placeholders})`).run(userId, ...newIds);
-    } else {
-      db.prepare('DELETE FROM books WHERE user_id = ?').run(userId);
-    }
-    // Upsert 所有书
-    for (const book of allBooks) {
-      upsert.run(bookToParams(userId, book));
-    }
-  });
+    // 事务：先删除用户所有书，再批量插入
+    // 这样前端只需要把当前状态全量发过来，后端自动同步
+    const tx = db.transaction((allBooks: any[]) => {
+      // 先删除当前不在列表中的书
+      const newIds = allBooks.map(b => b.id);
+      if (newIds.length > 0) {
+        const placeholders = newIds.map(() => '?').join(',');
+        db.prepare(`DELETE FROM books WHERE user_id = ? AND id NOT IN (${placeholders})`).run(userId, ...newIds);
+      } else {
+        db.prepare('DELETE FROM books WHERE user_id = ?').run(userId);
+      }
+      // Upsert 所有书
+      for (const book of allBooks) {
+        upsert.run(bookToParams(userId, book));
+      }
+    });
 
-  tx(books);
+    tx(books);
 
-  // 返回最新状态
-  const rows = db.prepare('SELECT * FROM books WHERE user_id = ? ORDER BY created_at').all(userId) as BookRow[];
-  res.json({ success: true, data: rows.map(rowToBook) });
+    // 返回最新状态
+    const rows = db.prepare('SELECT * FROM books WHERE user_id = ? ORDER BY created_at').all(userId) as BookRow[];
+    res.json({ success: true, data: rows.map(rowToBook) });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ============================================================================
@@ -209,26 +221,34 @@ const upsertBookSchema = z.object({
   updatedAt: z.string().optional(),
 });
 
-router.put('/:id', (req, res) => {
-  const book = upsertBookSchema.parse({ ...req.body, id: req.params.id });
-  const userId = req.user!.id;
+router.put('/:id', (req, res, next) => {
+  try {
+    const book = upsertBookSchema.parse({ ...req.body, id: req.params.id });
+    const userId = req.user!.id;
 
-  db.prepare(UPSERT_SQL).run(bookToParams(userId, book));
+    db.prepare(UPSERT_SQL).run(bookToParams(userId, book));
 
-  const row = db.prepare('SELECT * FROM books WHERE id = ? AND user_id = ?').get(book.id, userId) as BookRow;
-  res.json({ success: true, data: rowToBook(row) });
+    const row = db.prepare('SELECT * FROM books WHERE id = ? AND user_id = ?').get(book.id, userId) as BookRow;
+    res.json({ success: true, data: rowToBook(row) });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ============================================================================
 // 删除单本书
 // ============================================================================
 
-router.delete('/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM books WHERE id = ? AND user_id = ?').run(req.params.id, req.user!.id);
-  if (result.changes === 0) {
-    throw new AppError('BOOK_NOT_FOUND', '书籍不存在', 404);
+router.delete('/:id', (req, res, next) => {
+  try {
+    const result = db.prepare('DELETE FROM books WHERE id = ? AND user_id = ?').run(req.params.id, req.user!.id);
+    if (result.changes === 0) {
+      throw new AppError('BOOK_NOT_FOUND', '书籍不存在', 404);
+    }
+    res.json({ success: true, data: { id: req.params.id } });
+  } catch (err) {
+    next(err);
   }
-  res.json({ success: true, data: { id: req.params.id } });
 });
 
 export default router;

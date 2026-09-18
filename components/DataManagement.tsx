@@ -15,6 +15,7 @@ import { Button } from './Button';
 interface DataManagementProps {
   onExport: () => void;
   onImport: (file: File) => void;
+  onClearAll?: () => void;
   stats: {
     totalBooks: number;
     categoriesCount: number;
@@ -27,6 +28,7 @@ interface DataManagementProps {
 export const DataManagement: React.FC<DataManagementProps> = ({
   onExport,
   onImport,
+  onClearAll,
   stats,
   onReorganize,
   isReorganizing = false,
@@ -230,12 +232,7 @@ export const DataManagement: React.FC<DataManagementProps> = ({
           <CardFooter>
             <Button
               variant="danger"
-              onClick={() => {
-                if (confirm('确定要清除所有数据吗？此操作无法撤销。')) {
-                  localStorage.clear();
-                  window.location.reload();
-                }
-              }}
+              onClick={onClearAll}
               leftIcon={<Trash className="w-4 h-4" />}
             >
               清除所有数据

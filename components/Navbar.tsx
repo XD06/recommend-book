@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Books,
@@ -11,12 +11,15 @@ import {
   SignOut,
 } from '@phosphor-icons/react';
 import { Button } from './Button';
+import { Book, BookStatus, getBookCoverUrl, hasBookCover } from '../types';
 
 interface NavbarProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   onImportClick: () => void;
   user?: { username: string; email: string };
+  books?: Book[];
+  onSelectBook?: (book: Book) => void;
   onLogout?: () => void;
 }
 
@@ -32,6 +35,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onTabChange,
   onImportClick,
   user,
+  books = [],
+  onSelectBook,
   onLogout,
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -80,7 +85,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               'transition-all duration-normal ease-out-expo',
               isScrolled
                 ? 'bg-white/80 backdrop-blur-xl shadow-glass border border-white/50'
-                : 'bg-transparent',
+                : 'bg-white/60 backdrop-blur-md border border-white/30',
             ].join(' ')}
           >
             {/* Logo */}
@@ -128,17 +133,18 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             {/* Actions */}
             <div className="flex items-center gap-2">
-              {/* Search Button */}
+              {/* Search Button — visible on all screen sizes */}
               <button
                 onClick={() => setShowSearch(true)}
                 className={[
-                  'hidden sm:flex items-center gap-2 px-3 py-2 text-sm text-zinc-500',
+                  'flex items-center gap-2 px-3 py-2 text-sm text-zinc-500',
                   'bg-zinc-100 hover:bg-zinc-200 rounded-lg',
                   'transition-colors duration-fast',
                 ].join(' ')}
+                title="搜索书籍 (Ctrl+K)"
               >
                 <MagnifyingGlass className="w-4 h-4" />
-                <span className="text-zinc-400">搜索</span>
+                <span className="hidden sm:inline text-zinc-400">搜索</span>
                 <kbd className="hidden lg:inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono bg-white rounded border border-zinc-200 text-zinc-400">
                   <Command className="w-3 h-3" />K
                 </kbd>
@@ -167,16 +173,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </button>
                 </div>
               )}
-
-              {/* Mobile Menu Button */}
-              <button
-                className="md:hidden p-2 text-zinc-600 hover:bg-zinc-100 rounded-lg transition-colors"
-                onClick={() => {/* Toggle mobile menu */}}
-              >
-                <div className="w-5 h-0.5 bg-current rounded-full mb-1" />
-                <div className="w-5 h-0.5 bg-current rounded-full mb-1" />
-                <div className="w-5 h-0.5 bg-current rounded-full" />
-              </button>
             </div>
           </div>
         </div>
@@ -209,20 +205,43 @@ export const Navbar: React.FC<NavbarProps> = ({
       {/* Search Modal */}
       <AnimatePresence>
         {showSearch && (
-          <SearchModal onClose={() => setShowSearch(false)} />
+          <SearchModal
+            books={books}
+            onClose={() => setShowSearch(false)}
+            onSelectBook={(book) => {
+              onSelectBook?.(book);
+              setShowSearch(false);
+            }}
+          />
         )}
       </AnimatePresence>
     </>
   );
 };
 
-// Search Modal Component
+// Search Modal Component — with actual search functionality
 interface SearchModalProps {
+  books: Book[];
   onClose: () => void;
+  onSelectBook: (book: Book) => void;
 }
 
-const SearchModal: React.FC<SearchModalProps> = ({ onClose }) => {
+const SearchModal: React.FC<SearchModalProps> = ({ books, onClose, onSelectBook }) => {
   const [query, setQuery] = useState('');
+
+  // Search results — filter by title, author, category
+  const results = useMemo(() => {
+    if (!query.trim()) return [];
+    const q = query.toLowerCase();
+    return books
+      .filter((b) =>
+        b.title.toLowerCase().includes(q) ||
+        b.author.toLowerCase().includes(q) ||
+        b.category.toLowerCase().includes(q) ||
+        (b.subcategory && b.subcategory.toLowerCase().includes(q))
+      )
+      .slice(0, 8);
+  }, [books, query]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -231,6 +250,12 @@ const SearchModal: React.FC<SearchModalProps> = ({ onClose }) => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
+
+  const statusIcon = (status: string) => {
+    if (status === BookStatus.READING) return '📖';
+    if (status === BookStatus.FINISHED) return '✓';
+    return '○';
+  };
 
   return (
     <motion.div
@@ -262,13 +287,53 @@ const SearchModal: React.FC<SearchModalProps> = ({ onClose }) => {
             ESC
           </kbd>
         </div>
-        <div className="p-2">
-          <div className="px-3 py-2 text-xs font-medium text-zinc-400 uppercase tracking-wide">
-            最近搜索
-          </div>
-          <div className="text-sm text-zinc-500 px-3 py-8 text-center">
-            输入关键词开始搜索
-          </div>
+        <div className="p-2 max-h-[40vh] overflow-y-auto">
+          {query.trim() === '' ? (
+            <div className="text-sm text-zinc-500 px-3 py-8 text-center">
+              输入关键词搜索书库中的书籍
+            </div>
+          ) : results.length === 0 ? (
+            <div className="text-sm text-zinc-400 px-3 py-8 text-center">
+              未找到匹配「{query}」的书籍
+            </div>
+          ) : (
+            <>
+              <div className="px-3 py-2 text-xs font-medium text-zinc-400 uppercase tracking-wide">
+                搜索结果（{results.length}）
+              </div>
+              {results.map((book) => (
+                <button
+                  key={book.id}
+                  onClick={() => onSelectBook(book)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-zinc-50 transition-colors text-left"
+                >
+                  {hasBookCover(book) ? (
+                    <img
+                      src={getBookCoverUrl(book)}
+                      alt={book.title}
+                      className="w-8 h-11 rounded object-cover shrink-0"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  ) : (
+                    <div
+                      className="w-8 h-11 rounded shrink-0 flex items-center justify-center text-white text-[10px] font-bold"
+                      style={{ backgroundColor: book.coverColor || '#059669' }}
+                    >
+                      {book.title[0]}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-zinc-900 truncate">
+                      {statusIcon(book.status)} {book.title}
+                    </div>
+                    <div className="text-xs text-zinc-400 truncate">
+                      {book.author} · {book.category}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
         </div>
       </motion.div>
     </motion.div>

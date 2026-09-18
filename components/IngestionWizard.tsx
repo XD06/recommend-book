@@ -55,9 +55,9 @@ export const IngestionWizard: React.FC<IngestionWizardProps> = ({
                     // 使用豆瓣数据补充
                     author: doubanBook.author?.join(', ') || b.author || '未知',
                     publisher: doubanBook.publisher || '',
-                    // 封面使用代理格式
+                    // 封面使用后端代理路由（避免硬编码域名）
                     coverUrl: doubanBook.cover_url 
-                      ? `https://douban-proxy.203065.xyz/?url=${encodeURIComponent(doubanBook.cover_url)}`
+                      ? `${import.meta.env.VITE_API_BASE || 'http://localhost:3001/api'}/douban/cover?url=${encodeURIComponent(doubanBook.cover_url)}`
                       : undefined,
                     // 豆瓣评分
                     rating: doubanBook.rating_score,

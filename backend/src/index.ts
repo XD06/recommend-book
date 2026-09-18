@@ -30,11 +30,18 @@ app.use(helmet());
 
 // CORS
 const allowedOrigins = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
+  ? process.env.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
   : ['http://localhost:5173', 'http://localhost:3000'];
+
+// 生产环境必须显式配置 CORS_ORIGINS，不允许回退到 true（允许所有来源）
+if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGINS) {
+  console.warn('\n⚠️  [安全警告] 生产环境未配置 CORS_ORIGINS，将拒绝所有跨域请求。\n' +
+    '请在 .env 中设置 CORS_ORIGINS=https://your-domain.com\n');
+}
+
 app.use(cors({
   origin: process.env.NODE_ENV === 'production'
-    ? (allowedOrigins.length > 0 ? allowedOrigins : true)
+    ? (allowedOrigins.length > 0 ? allowedOrigins : false)
     : ['http://localhost:5173', 'http://localhost:3000'],
   credentials: true,
 }));

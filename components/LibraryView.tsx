@@ -120,7 +120,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <Clock weight="fill" className="w-5 h-5 text-accent-600" />
               正在阅读
             </h2>
-            <Button variant="ghost" size="sm" rightIcon={<ArrowRight className="w-4 h-4" />}>
+            <Button variant="ghost" size="sm" rightIcon={<ArrowRight className="w-4 h-4" />} onClick={() => { setFilterStatus(BookStatus.READING); document.querySelector('#books-grid')?.scrollIntoView({ behavior: 'smooth' }); }}>
               查看全部
             </Button>
           </div>
@@ -347,6 +347,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         {/* Books Grid - Main Area */}
         <motion.section
+          id="books-grid"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.5, delay: 0.3 }}
