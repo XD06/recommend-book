@@ -64,5 +64,6 @@ docs/                    项目文档与归档
 - 架构说明：[ARCHITECTURE.md](ARCHITECTURE.md)
 - 更新日志：[CHANGELOG.md](CHANGELOG.md)
 - AI 协作规范：[AGENTS.md](AGENTS.md)（本地文件，不入库）
+- AI 荐书诊断与路线图：[docs/AI-RECOMMENDATION-ROADMAP.md](docs/AI-RECOMMENDATION-ROADMAP.md)
 - 参考资料：[docs/将AI-Agent嵌入App的三层架构指南.md](docs/将AI-Agent嵌入App的三层架构指南.md)
 - 历史文档归档：[docs/archive/](docs/archive/)（本地文件，不入库）

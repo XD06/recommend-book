@@ -4,7 +4,10 @@
 
 ## [未发布]
 
-进行中的改动（尚未提交）：
+自上一提交以来已落在仓库、但尚未发版的改动：
+
+### 新增
+- `docs/AI-RECOMMENDATION-ROADMAP.md`：AI 荐书链路诊断与路线图（画像链路断点、常驻注入分档、统计口径归一、移动端缺陷、采纳反馈闭环与评估集），逐条附 `文件:行号` 证据与验收标准
 
 ### 变更
 - UI 组件重构：新增 `ConfirmDialog` 确认对话框组件，移除未使用的 `CategoryAdvisor`、`FallbackCover`、`Input`、`LibraryTable`、`Sidebar`、`UserProfilePanel` 等废弃组件
