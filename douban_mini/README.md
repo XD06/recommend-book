@@ -1,6 +1,6 @@
 # douban_mini — 豆瓣书籍极简抓取器
 
-零依赖（仅需 aiohttp + bs4），无 Playwright，无缓存，适合移植到其他项目。
+轻依赖：仅 `aiohttp` + `beautifulsoup4` + `lxml`（见 `requirements.txt`），无 Playwright，自身不写缓存，适合移植到其他项目。
 
 ## 核心功能
 
