@@ -86,7 +86,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     <ToastContext.Provider value={{ showToast, showSuccess, showError, showWarning, showInfo }}>
       {children}
       {/* Toast Container */}
-      <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+      <div className="fixed top-4 right-4 left-4 sm:left-auto z-[100] flex flex-col items-end gap-2 pointer-events-none">
         <AnimatePresence mode="popLayout">
           {toasts.map((toast) => {
             const Icon = icons[toast.type];
@@ -98,7 +98,7 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, x: 20, scale: 0.9 }}
                 transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
-                className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg min-w-[300px] max-w-[400px] ${styles[toast.type]}`}
+                className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-xl border shadow-lg w-full sm:w-auto sm:min-w-[300px] max-w-[400px] ${styles[toast.type]}`}
               >
                 <Icon className={`w-5 h-5 shrink-0 ${iconColors[toast.type]}`} weight="fill" />
                 <p className="text-sm font-medium flex-1">{toast.message}</p>

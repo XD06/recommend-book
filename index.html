@@ -8,6 +8,9 @@
     <style>
       html { background: #fafafa; color-scheme: light; }
       body { margin: 0; background: #fafafa; }
+      /* 键盘刷新后 Chrome 会把焦点还给文档，命中 :focus-visible 时在撑满视口的 body 上画一圈默认黑色描边；
+         styles.css 是 JS 注入的，晚于首帧，所以这条抑制必须内联在 head 里 */
+      html:focus-visible, body:focus-visible { outline: none; box-shadow: none; }
     </style>
   </head>
   <body>

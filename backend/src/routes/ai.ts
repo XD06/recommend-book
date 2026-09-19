@@ -270,6 +270,7 @@ initSSE(res);
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
       signal,
       (text) => writeSSE(res, { type: 'reasoning', content: text }),
+      (bookId, updates) => writeSSE(res, { type: 'book_update', bookId, updates }),
     );
     writeSSE(res, { type: 'done', data: result });
     res.end();
@@ -379,7 +380,7 @@ initSSE(res);
       signal, library,
       (phase) => writeSSE(res, { type: 'phase', phase }),
       (toolName, label, round) => writeSSE(res, { type: 'tool_call', tool: toolName, label, round }),
-      undefined,
+      (bookId, updates) => writeSSE(res, { type: 'book_update', bookId, updates }),
       (text) => writeSSE(res, { type: 'reasoning', content: text }),
     );
     writeSSE(res, { type: 'done', data: fullText });

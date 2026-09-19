@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Download,
@@ -8,9 +8,12 @@ import {
   FileJs,
   Warning,
   Info,
+  UserCircle,
+  FloppyDisk,
 } from '@phosphor-icons/react';
 import { Card, CardHeader, CardContent, CardFooter } from './Card';
 import { Button } from './Button';
+import { ReadingLevel, UserProfile } from '../types';
 
 interface DataManagementProps {
   onExport: () => void;
@@ -23,7 +26,17 @@ interface DataManagementProps {
   };
   onReorganize?: () => void;
   isReorganizing?: boolean;
+  userProfile?: UserProfile | null;
+  availableCategories?: string[];
+  onSaveProfile?: (profile: UserProfile) => Promise<void> | void;
 }
+
+const LEVEL_OPTIONS: Array<{ value: ReadingLevel; label: string; hint: string }> = [
+  { value: 'beginner', label: '入门', hint: '偏好易读、篇幅可控的书' },
+  { value: 'intermediate', label: '进阶', hint: '能读专业入门与综述类' },
+  { value: 'advanced', label: '高阶', hint: '能啃原著、论文与体系化专著' },
+  { value: 'expert', label: '专家', hint: '需要前沿、硬核的内容' },
+];
 
 export const DataManagement: React.FC<DataManagementProps> = ({
   onExport,
@@ -32,8 +45,46 @@ export const DataManagement: React.FC<DataManagementProps> = ({
   stats,
   onReorganize,
   isReorganizing = false,
+  userProfile,
+  availableCategories = [],
+  onSaveProfile,
 }) => {
   const [dragActive, setDragActive] = useState(false);
+  const [level, setLevel] = useState<ReadingLevel>(userProfile?.readingLevel ?? 'beginner');
+  const [goal, setGoal] = useState(userProfile?.readingGoal ?? '');
+  const [minutes, setMinutes] = useState(userProfile?.dailyReadingTime ?? 30);
+  const [preferred, setPreferred] = useState<string[]>(userProfile?.preferredCategories ?? []);
+  const [savingProfile, setSavingProfile] = useState(false);
+
+  // 画像异步加载完成后填充表单，避免首帧显示默认值
+  useEffect(() => {
+    if (!userProfile) return;
+    setLevel(userProfile.readingLevel);
+    setGoal(userProfile.readingGoal ?? '');
+    setMinutes(userProfile.dailyReadingTime ?? 30);
+    setPreferred(userProfile.preferredCategories ?? []);
+  }, [userProfile]);
+
+  const togglePreferred = (cat: string) => {
+    setPreferred(prev => (prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]));
+  };
+
+  const handleSaveProfile = async () => {
+    if (!onSaveProfile) return;
+    setSavingProfile(true);
+    try {
+      // 展开保留 aiAnalysis 等本表单不编辑的字段
+      await onSaveProfile({
+        ...(userProfile ?? { readingLevel: level, preferredCategories: preferred }),
+        readingLevel: level,
+        readingGoal: goal.trim() || undefined,
+        dailyReadingTime: minutes,
+        preferredCategories: preferred,
+      });
+    } finally {
+      setSavingProfile(false);
+    }
+  };
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -61,7 +112,7 @@ export const DataManagement: React.FC<DataManagementProps> = ({
   };
 
   return (
-    <div className="space-y-6 pt-20 pb-8 max-w-3xl">
+    <div className="space-y-6 pt-[var(--top-nav-h)] pb-[calc(var(--bottom-nav-h)_+_1rem)] md:pb-8 max-w-3xl mx-auto">
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -80,7 +131,7 @@ export const DataManagement: React.FC<DataManagementProps> = ({
       >
         <Card>
           <CardHeader title="数据概览" />
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="text-center p-4 bg-zinc-50 rounded-xl">
               <div className="text-2xl font-bold text-zinc-900 font-mono">{stats.totalBooks}</div>
               <div className="text-xs text-zinc-500 mt-1">藏书总数</div>
@@ -96,6 +147,130 @@ export const DataManagement: React.FC<DataManagementProps> = ({
           </div>
         </Card>
       </motion.div>
+
+      {/* Reading Profile — AI 推荐的个性化输入 */}
+      {onSaveProfile && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.15, ease: [0.23, 1, 0.32, 1] }}
+        >
+          <Card>
+            <CardHeader
+              title="阅读画像"
+              subtitle="AI 顾问每次推荐都会读取这份画像；不填写则推荐以无个性化模式运行"
+              icon={<UserCircle className="w-5 h-5 text-accent-600" />}
+            />
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">
+                  阅读水平
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {LEVEL_OPTIONS.map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setLevel(opt.value)}
+                      title={opt.hint}
+                      className={[
+                        'px-3 py-2 rounded-lg text-sm transition-colors border',
+                        level === opt.value
+                          ? 'bg-accent-50 border-accent-200 text-accent-700 font-medium'
+                          : 'bg-zinc-50 border-transparent text-zinc-600 hover:bg-zinc-100',
+                      ].join(' ')}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-zinc-400 mt-1.5">
+                  {LEVEL_OPTIONS.find(o => o.value === level)?.hint}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-1.5">
+                  阅读目标
+                </label>
+                <textarea
+                  value={goal}
+                  onChange={e => setGoal(e.target.value)}
+                  rows={2}
+                  placeholder="例如：下半年把系统编程的基础补起来，兼顾可读性"
+                  className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-200 bg-zinc-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-accent-100 resize-y"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-1.5">
+                  每日阅读时间：<span className="font-mono normal-case">{minutes}</span> 分钟
+                </label>
+                <input
+                  type="range"
+                  min={5}
+                  max={180}
+                  step={5}
+                  value={minutes}
+                  onChange={e => setMinutes(Number(e.target.value))}
+                  className="w-full accent-accent-600"
+                />
+                <p className="text-xs text-zinc-400 mt-1">影响 AI 排出的书单体量与阅读路径预估</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">
+                  偏好分类
+                </label>
+                {availableCategories.length === 0 ? (
+                  <p className="text-sm text-zinc-400">书库还没有分类可选项</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {availableCategories.map(cat => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => togglePreferred(cat)}
+                        className={[
+                          'px-2.5 py-1 rounded-full text-xs transition-colors border',
+                          preferred.includes(cat)
+                            ? 'bg-accent-50 border-accent-200 text-accent-700'
+                            : 'bg-zinc-50 border-zinc-200 text-zinc-500 hover:bg-zinc-100',
+                        ].join(' ')}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {userProfile?.aiAnalysis && (
+                <div className="flex items-start gap-3 p-3 bg-zinc-50 rounded-lg border border-zinc-100">
+                  <Info className="w-4 h-4 text-zinc-500 shrink-0 mt-0.5" />
+                  <div className="text-xs text-zinc-600 space-y-1">
+                    <p className="font-medium text-zinc-700">AI 分析（自动生成，手改会被覆盖）</p>
+                    <p>{userProfile.aiAnalysis.readingPattern}</p>
+                    {userProfile.aiAnalysis.blindSpots.length > 0 && (
+                      <p>盲区：{userProfile.aiAnalysis.blindSpots.join('、')}</p>
+                    )}
+                    <p>建议方向：{userProfile.aiAnalysis.recommendedFocus}</p>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+            <CardFooter>
+              <Button
+                onClick={handleSaveProfile}
+                isLoading={savingProfile}
+                leftIcon={<FloppyDisk className="w-4 h-4" />}
+              >
+                保存画像
+              </Button>
+            </CardFooter>
+          </Card>
+        </motion.div>
+      )}
 
       {/* Export Section */}
       <motion.div

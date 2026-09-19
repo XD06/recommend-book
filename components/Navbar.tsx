@@ -70,7 +70,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.4, ease: [0.23, 1, 0.32, 1] }}
         className={[
-          'fixed top-0 left-0 right-0 z-50',
+          'fixed top-[env(safe-area-inset-top,0px)] left-0 right-0 z-50',
           'transition-all duration-normal ease-out-expo',
           isScrolled
             ? 'py-3'
@@ -150,14 +150,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </kbd>
               </button>
 
-              {/* Add Book Button */}
+              {/* Add Book Button — 窄屏只留图标，导入是移动端主路径 */}
               <Button
                 size="sm"
                 leftIcon={<Plus className="w-4 h-4" />}
                 onClick={onImportClick}
-                className="hidden sm:flex"
               >
-                添加书籍
+                <span className="hidden sm:inline">添加书籍</span>
               </Button>
 
               {/* User Menu */}
@@ -179,7 +178,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       </motion.header>
 
       {/* Mobile Bottom Nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/90 backdrop-blur-xl border-t border-zinc-200/80 safe-area-pb">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/90 backdrop-blur-xl border-t border-zinc-200/80 pb-safe">
         <div className="flex items-center justify-around py-2">
           {navItems.map((item) => {
             const Icon = item.icon;

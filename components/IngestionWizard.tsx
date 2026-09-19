@@ -109,7 +109,7 @@ export const IngestionWizard: React.FC<IngestionWizardProps> = ({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -20 }}
       transition={{ duration: 0.3, ease: [0.23, 1, 0.32, 1] }}
-      className="pt-20 pb-8"
+      className="pt-[var(--top-nav-h)] pb-8"
     >
       <div className="max-w-2xl mx-auto">
         <AnimatePresence mode="wait">

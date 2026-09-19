@@ -157,7 +157,7 @@ const ai = useAIActivity();
   };
 
   return (
-    <div className="flex flex-col h-[500px]">
+    <div className="flex flex-col h-[60vh] max-h-[500px] min-h-[300px]">
       {/* 消息列表 */}
       <div
         ref={scrollRef}

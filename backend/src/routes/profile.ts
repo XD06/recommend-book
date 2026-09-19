@@ -7,6 +7,8 @@ import { z } from 'zod';
 import db from '../db/database';
 import { requireAuth } from '../middleware/auth';
 import { AppError } from '../types';
+import { computeLibraryStats } from '../services/libraryStats';
+import { rowToBook, BookRow } from './books';
 
 const router = Router();
 
@@ -99,6 +101,16 @@ router.put('/', (req, res) => {
       aiAnalysis: row.ai_analysis ? JSON.parse(row.ai_analysis) : undefined,
     },
   });
+});
+
+// ============================================================================
+// 书库统计
+// ============================================================================
+
+// 与 AI 概览共用 computeLibraryStats：页面数字与发给模型的数字同源
+router.get('/stats', (req, res) => {
+  const rows = db.prepare('SELECT * FROM books WHERE user_id = ?').all(req.user!.id) as BookRow[];
+  res.json({ success: true, data: computeLibraryStats(rows.map(rowToBook) as any) });
 });
 
 // ============================================================================

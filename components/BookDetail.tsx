@@ -433,13 +433,13 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
           ) : (
             <div className="space-y-6">
               {/* Tabs */}
-              <div className="flex gap-1 border-b border-zinc-200 -mx-5 md:-mx-6 px-5 md:px-6">
+              <div className="flex gap-1 border-b border-zinc-200 -mx-5 md:-mx-6 px-5 md:px-6 overflow-x-auto no-scrollbar">
                 {(['insight', 'progress', 'qa', 'douban'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
                     className={[
-                      'pb-3 px-4 text-sm font-medium border-b-2 -mb-px transition-colors duration-200',
+                      'shrink-0 whitespace-nowrap pb-3 px-4 text-sm font-medium border-b-2 -mb-px transition-colors duration-200',
                       activeTab === tab
                         ? 'border-accent-500 text-accent-600'
                         : 'border-transparent text-zinc-400 hover:text-zinc-600',

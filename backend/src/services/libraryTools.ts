@@ -26,6 +26,7 @@
 
 import { Book, BookStatus, BookLevel } from '../types';
 import { UserProfile } from '../types';
+import { computeLibraryStats, formatCategoryDistribution } from './libraryStats';
 import {
   WEB_TOOLS,
   executeWebTool,
@@ -486,24 +487,16 @@ function getCategoryStats(args: Record<string, any>, library: Book[]): any {
   const category = args.category;
   const books = library.filter(b => b.category === category || b.subcategory === category);
 
-  // 计算平均评分
-  const ratedBooks = books.filter(b => b.rating);
-  const avgRating = ratedBooks.length > 0
-    ? ratedBooks.reduce((sum, b) => sum + (b.rating || 0), 0) / ratedBooks.length
-    : 0;
+  const s = computeLibraryStats(books);
 
-  const stats = {
+  return {
     category,
-    totalBooks: books.length,
-    reading: books.filter(b => b.status === BookStatus.READING).length,
-    finished: books.filter(b => b.status === BookStatus.FINISHED).length,
-    unread: books.filter(b => b.status === BookStatus.UNREAD).length,
-    avgRating: avgRating > 0 ? avgRating.toFixed(1) : null,
-    levelDistribution: {
-      [BookLevel.BASIC]: books.filter(b => b.level === BookLevel.BASIC).length,
-      [BookLevel.ADVANCED]: books.filter(b => b.level === BookLevel.ADVANCED).length,
-      [BookLevel.EXPERT]: books.filter(b => b.level === BookLevel.EXPERT).length,
-    },
+    totalBooks: s.totals.total,
+    reading: s.totals.reading,
+    finished: s.totals.finished,
+    unread: s.totals.unread,
+    avgRating: s.rating.avg > 0 ? s.rating.avg.toFixed(1) : null,
+    levelDistribution: s.levels,
     books: books.map(b => ({
       id: b.id,
       title: b.title,
@@ -515,8 +508,6 @@ function getCategoryStats(args: Record<string, any>, library: Book[]): any {
       doubanRating: b.doubanData?.rating_score,
     })),
   };
-
-  return stats;
 }
 
 function getReadingHistory(args: Record<string, any>, library: Book[]): any[] {
@@ -1084,39 +1075,15 @@ export function buildLibraryOverview(library: Book[]): string {
   const finished = library.filter(b => b.status === BookStatus.FINISHED);
   const unread = library.filter(b => b.status === BookStatus.UNREAD);
 
-  // 分类统计
-  const catMap: Record<string, { total: number; reading: number; finished: number; unread: number }> = {};
-  for (const b of library) {
-    if (!catMap[b.category]) {
-      catMap[b.category] = { total: 0, reading: 0, finished: 0, unread: 0 };
-    }
-    catMap[b.category].total++;
-    if (b.status === BookStatus.READING) catMap[b.category].reading++;
-    else if (b.status === BookStatus.FINISHED) catMap[b.category].finished++;
-    else catMap[b.category].unread++;
-  }
-
-  const catStats = Object.entries(catMap)
-    .sort((a, b) => b[1].total - a[1].total)
-    .map(([cat, s]) => `${cat}(${s.total}本: 在读${s.reading},已读${s.finished},未读${s.unread})`)
-    .join('、');
+  const stats = computeLibraryStats(library);
 
   let overview = `【书库概览】共 ${total} 本（在读 ${reading.length}，已读 ${finished.length}，未读 ${unread.length}）\n`;
-  overview += `【分类分布】${catStats}\n`;
-
-  // 难度分布
-  const levelStats = {
-    [BookLevel.BASIC]: library.filter(b => b.level === BookLevel.BASIC).length,
-    [BookLevel.ADVANCED]: library.filter(b => b.level === BookLevel.ADVANCED).length,
-    [BookLevel.EXPERT]: library.filter(b => b.level === BookLevel.EXPERT).length,
-  };
-  overview += `【难度分布】入门${levelStats[BookLevel.BASIC]}、进阶${levelStats[BookLevel.ADVANCED]}、专家${levelStats[BookLevel.EXPERT]}\n`;
+  overview += `【分类分布】${formatCategoryDistribution(stats)}\n`;
+  overview += `【难度分布】入门${stats.levels[BookLevel.BASIC]}、进阶${stats.levels[BookLevel.ADVANCED]}、专家${stats.levels[BookLevel.EXPERT]}\n`;
 
   // 评分统计
-  const ratedBooks = library.filter(b => b.rating);
-  if (ratedBooks.length > 0) {
-    const avgRating = ratedBooks.reduce((sum, b) => sum + (b.rating || 0), 0) / ratedBooks.length;
-    overview += `【评分】已评${ratedBooks.length}本，平均${avgRating.toFixed(1)}分\n`;
+  if (stats.rating.count > 0) {
+    overview += `【评分】已评${stats.rating.count}本，平均${stats.rating.avg.toFixed(1)}分\n`;
   }
 
   // === 新增：阅读品味画像（紧凑版） ===
@@ -1148,16 +1115,37 @@ export function buildLibraryOverview(library: Book[]): string {
     }
   }
 
-  // 所有书籍索引（紧凑格式，供 AI 按需查询）
-  if (library.length > 0 && library.length <= 100) {
-    overview += `\n【书库索引】\n`;
-    for (const b of library) {
-      const statusIcon = b.status === BookStatus.READING ? '📖' : b.status === BookStatus.FINISHED ? '✓' : '○';
-      overview += `[${b.id}] ${statusIcon} 《${b.title}》- ${b.author} [${b.category}/${b.subcategory}] (${b.level})\n`;
-    }
-  }
+  // 书库索引分档：全量注入在 >100 本时会挤掉对话历史，而 AI 无法区分"看全了"和"只看到一部分"，
+  // 于是会拿节选当全集推荐。因此每档都显式声明覆盖范围。
+  const fmtIndex = (b: Book) => {
+    const statusIcon = b.status === BookStatus.READING ? '📖' : b.status === BookStatus.FINISHED ? '✓' : '○';
+    return `[${b.id}] ${statusIcon} 《${b.title}》- ${b.author} [${b.category}/${b.subcategory}] (${b.level})`;
+  };
 
-  overview += `\n提示：建议优先使用 get_reading_taste_profile 获取完整品味画像（含阅读人格分析），使用 get_reading_gaps 分析知识缺口，使用 get_reading_notes 查看用户阅读笔记。其他工具：搜索书库（含标签搜索）、获取书籍详情（含豆瓣标签和评分）、查看分类统计、查看阅读历史、查看用户画像。`;
+  const FULL_INDEX_LIMIT = 100;
+  const CURATED_INDEX_LIMIT = 300;
+  const PER_CATEGORY_INDEX = 3;
+
+  if (total <= FULL_INDEX_LIMIT) {
+    overview += `\n【书库索引 · 完整（${total}/${total} 本）】\n`;
+    overview += library.map(fmtIndex).join('\n') + '\n';
+  } else if (total <= CURATED_INDEX_LIMIT) {
+    const picked = new Map<string, Book>();
+    for (const b of reading) picked.set(b.id, b);
+    for (const b of recentFinished) picked.set(b.id, b);
+    const byCategory: Record<string, Book[]> = {};
+    for (const b of library) (byCategory[b.category] ||= []).push(b);
+    for (const list of Object.values(byCategory)) {
+      list.sort((x, y) => (y.updatedAt || '').localeCompare(x.updatedAt || ''));
+      for (const b of list.slice(0, PER_CATEGORY_INDEX)) picked.set(b.id, b);
+    }
+    overview += `\n【书库索引 · 节选（${picked.size}/${total} 本：全部在读 + 最近读完 + 各分类最新 ${PER_CATEGORY_INDEX} 本），其余 ${total - picked.size} 本看不到书名，必须用 search_library / get_category_stats 查询后再推荐，不要假设书库里只有这些】\n`;
+    overview += [...picked.values()].map(fmtIndex).join('\n') + '\n';
+  } else {
+    // 不注入书名：413 本级别的索引会让常驻上下文膨胀数倍，而按分类取书名本来就是
+    // get_category_stats 的强项（它返回该分类全部书籍）。这里只声明"书名要靠工具拿"。
+    overview += `\n【书库索引 · 未注入（共 ${total} 本，超出注入上限 ${CURATED_INDEX_LIMIT} 本）】除上面的「在读书籍」与「最近读完」，概览里没有任何书名。必须先用 get_category_stats / search_library 拿到候选书目再推荐，禁止凭分类名臆测用户读了什么书。\n`;
+  }
 
   return overview;
 }

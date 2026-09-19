@@ -8,6 +8,11 @@ echo.
 REM 设置窗口标题
 title DeepRead 开发服务器
 
+REM Node 18+ 的全局 fetch 默认不读 HTTP(S)_PROXY，走系统 DNS 直连。
+REM 本机若靠本地代理出网（DNS 会把外网域名解析成 127.x 占位地址），
+REM 后端调 LiteLLM 会报 "fetch failed"。打开这个开关后 Node 与 curl 行为一致。
+set "NODE_USE_ENV_PROXY=1"
+
 REM 获取当前目录
 set "PROJECT_ROOT=%~dp0"
 cd /d "%PROJECT_ROOT%"

@@ -96,7 +96,7 @@ graph LR
 
 **验收标准**
 - 构造 79 / 81 / 301 本三套书库，概览长度、首行档位声明、工具调用次数均按预期变化（脚本比对，不落 AI 依赖）。
-- 单次推荐请求的 prompt token 相对基线下降 ≥25%，且人工评分不降。
+- 单次推荐请求的 prompt token 相对基线下降 ≥25%，且人工评分不降。**（已作废：前提错误，实测见 §9）**
 
 **成本/风险**：集中在一个函数，中等；风险是削减注入后模型"看不全"→ 用档位声明 + 保留搜索工具兜底。
 
@@ -162,13 +162,13 @@ graph LR
 
 ## 6. 建议顺序与阶段 DoD
 
-| 阶段 | 内容 | DoD（可验证） |
-|------|------|--------------|
-| S1 | O1 画像接线 + §5 的 `aiBookUpdate` 断线 | 工具返回真实画像；AI 改状态后界面与 DB 一致 |
-| S2 | O2 分档注入 + 删冗余 | 三套规模书库行为符合预期；prompt token ≥25% 下降 |
-| S3 | O3 统计归一（含 `sort` 与热力图） | 页面数字与概览数字逐项相等 |
-| S4 | O4 移动端 6 项 | 四档断点主路径人工通过 |
-| S5 | O5 反馈表 + 评估集 | 拿到第一次基线分数，此后每次 prompt 改动必须报分差 |
+| 阶段 | 内容 | DoD（可验证） | 状态（2026-09-18） |
+|------|------|--------------|--------------------|
+| S1 | O1 画像接线 + §5 的 `aiBookUpdate` 断线 | 工具返回真实画像；AI 改状态后界面与 DB 一致 | 代码已接完，构建通过；**端到端未验**（需真实请求看 `tool_call`） |
+| S2 | O2 分档注入 + 删冗余 | 三套规模书库行为符合预期；prompt token ≥25% 下降 | 分档 + 声明 + 删重复行已做并实测；**token ≥25% 未达成**（见 §9）；方案 3/4 未做 |
+| S3 | O3 统计归一（含 `sort` 与热力图） | 页面数字与概览数字逐项相等 | 已做（后端单一实现 + 新接口），热力图改为真实事件 |
+| S4 | O4 移动端 6 项 | 四档断点主路径人工通过 | 6 项 + 标签栏共 7 处已改；**四断点人工验证待做** |
+| S5 | O5 反馈表 + 评估集 | 拿到第一次基线分数，此后每次 prompt 改动必须报分差 | 未开始（需新增表 + 消耗 token 跑评估） |
 
 S1/S2 决定推荐"像不像懂你"，S5 决定"能否持续变好"。S3/S4 是使用面信任与触达。
 
@@ -185,3 +185,48 @@ S1/S2 决定推荐"像不像懂你"，S5 决定"能否持续变好"。S3/S4 是�
 
 唯一自动化门槛 = `npm run build`（根，vite）+ `cd backend && npm run build`（tsc）。
 其余一律人工：`backend/test-*.js` 冒烟、浏览器实机走主路径。推荐质量属主观效果，**必须靠 §4 的评估集人工打分**，不要以"构建通过"冒充"推荐变好了"。
+
+---
+
+## 9. S1–S4 实施记录（2026-09-18）
+
+改动落在：`App.tsx`、`styles.css`、`start.bat`、`components/{AIAdvisor,StatsView,DataManagement,LibraryView,ReadingHeatmap,BookQA,ReadingAssistant,BookDetail,Navbar,Toast}.tsx`、`services/bookService.ts`、`backend/src/{routes/ai.ts,routes/profile.ts,routes/books.ts,services/aiService.ts,services/libraryTools.ts,services/libraryStats.ts(新增),prompts/readingAdvisor.ts}`。
+
+写库回传（`book_update`）接通了三个入口：`/recommend/stream`、`/book-qa/stream`（本次补）、`/assistant/chat/stream`（此前已有）。仍传 `undefined` 的是 `/insight/stream` 与 `/reading-path/stream` —— 这两个是单次生成任务，提示词从不要求改状态，暂未接线（见下）。
+
+### 追加：寒暄也会输出整份书单（模式判定被位置稀释）
+
+**现象**：移动端发"你好"，AI 顾问直接给出三本书组合的完整推荐。
+
+**排查**：`readingAdvisor.ts` 的系统提示本身没写错——`:39-62` 有"响应模式判断"规则，`:258` 的示例 1 就是"你好"→ conversation。问题是这套 370+ 行提示几乎全在讲怎么推荐，判定规则夹在中间；更关键的是 `withTools`（`prompts/_shared.ts:89`）会把"建议优先使用 get_reading_taste_profile…"这段**追加到系统提示最尾部**，把判定规则挤成了中段文本。弱模型按尾部惯性走推荐分支。
+
+**修法**（不重构提示词，只挪位置 + 改掉反向措辞）：
+- 模式闸门写成用户提示词的**最后一条**（流式：`aiService.ts` 的 `getRecommendationsStream`；非流式：`readingAdvisor.ts:437` 的 `buildReadingAdvisorUserPrompt`），显式给出"寒暄/闲聊/问你是谁/需求太笼统 → conversation，reply ≤150 字、不给书单、不必调工具"。
+- 删掉 advisor `extraHint` 里"直接给出推荐"的措辞，改为"直接回答即可（寒暄或笼统请求按对话模式简短回应，不要输出书单）"。
+
+**状态**：改动已构建通过，但**尚未经过一次真实请求验证**——用户截图里那份"你好→书单"是 localStorage（`storageKey = 'ai-advisor-chat'`）恢复的历史消息，当时后端日志 `POST /api/ai` 计数为 0，不是新链路跑出来的。须由用户新发一条消息复测。
+
+### 实测：概览注入字符数（真实 413 本书库 + 合成库）
+
+| 书库规模 | 改动前 | 改动后 | 变化 |
+|---------|-------|-------|------|
+| 20 / 50 / 99 本（完整档） | 2337 / 4559 / 7624 | 2184 / 4406 / 7471 | **−2% ~ −6.5%**（索引本就注入，只少了 167 字符重复提示行） |
+| 101 / 200 / 300 本（节选档） | 2851 / 4766 / 6589 | 5954 / 9860 / 13182 | **+99% ~ +109%** |
+| 301 / 413 本（未注入档） | 6589 / 1509 | 6551 / 1471 | −0.6% ~ −2.5% |
+
+**结论：S2 的"prompt token ≥25% 下降"这条 DoD 未达成，且事后看前提就是错的。** 概览里真正冗余的只有那行与 `withTools` 重复的工具清单（167 字符）。101 本以上的问题不是"注入太多"，而是"书名静默消失"——修法是补一节可控的节选并声明覆盖范围，所以该档注入量必然上升。已把这条 DoD 标为不成立，不要再拿它当目标。
+
+### 未做（有意不做，不是遗漏）
+
+- **O2 方案 3**（概览并入 system 做稳定前缀以吃前缀缓存）：DeepSeek/LiteLLM 侧是否真能命中前缀缓存**未证实**，改了也无法自证收益 → 不做。
+- **O2 方案 4**（移除"优先调用 taste profile"的诱导）：未做，该措辞现在仍在 `prompts/_shared.ts:89` 的 `withTools` 尾部，且被拼进**每一个** AI 系统提示。这是纯推荐质量改动，没有 §4 评估集之前动了就是盲改 → 挂起，等 S5。
+- **S1 端到端验收**（真实请求里 `get_user_profile` 返回对象、SSE 可见 `tool_call`）与 **S4 四断点人工验证**：都需要登录态；不打算在用户本地库里注册测试账号，交由用户跑。
+- **`/insight/stream`、`/reading-path/stream` 的 `book_update`**：这两条链路工具集是同一份 `getAllTools()`，模型理论上仍可自由调 `update_book_status` 而回调是 `undefined` → 同类"说了没做"缺陷的残余。彻底修法是给 `callAgentStream` 加只读工具开关，属新设计，未纳入本轮。
+- **S5**：需要新增 `recommendations` 表（本仓库无迁移系统，加表 = 手工执行或删库重建）+ 消耗真实 token 跑评估集 → 未开始。
+
+### 已验证的部分
+
+- `npm run build`（前端 vite）与 `cd backend && npm run build`（tsc）全绿。
+- 排障：AI 全量 `fetch failed` 定位为 Node 全局 `fetch` 不读 `HTTP(S)_PROXY` + 本机 DNS 把 LLM 域名解析成 `127.x` 占位地址；同一请求带 `NODE_USE_ENV_PROXY=1` 后实测 200。已写入 `start.bat` 与 README 常见问题。
+- `GET /api/profile/stats` 未带 token 返回 401（路由挂载 + 鉴权生效）；`computeLibraryStats` 直连真实库跑通：413 本、在读 4、未读 409、19 个分类、已评 393 本均分 8.5。
+- 三档注入的实际输出逐档打印核对过。

@@ -434,7 +434,7 @@ export function buildReadingAdvisorUserPrompt(context: AIRequestContext): string
     });
   }
 
-  prompt += `\n请深度分析用户的阅读需求和状态，基于三本书组合架构给出有洞察力的个性化推荐。`;
+  prompt += `\n先判断响应模式：寒暄/闲聊/需求太笼统时用对话模式简短回应（不给书单）；只有需求明确时才按三本书组合架构给出推荐。`;
 
   return prompt;
 }

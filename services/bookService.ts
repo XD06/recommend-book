@@ -4,7 +4,7 @@
  * 所有操作通过后端 API 完成，数据存储在 SQLite 数据库中
  */
 
-import { Book, CategoryMeta, UserProfile } from '../types';
+import { Book, BookLevel, CategoryMeta, UserProfile } from '../types';
 import { API_BASE, authHeader } from './authService';
 
 // ============================================================================
@@ -74,6 +74,37 @@ export async function saveProfile(profile: UserProfile): Promise<UserProfile> {
     body: JSON.stringify(profile),
   });
   if (!res.ok) throw new Error('保存画像失败');
+  const data = await res.json();
+  return data.data;
+}
+
+// ============================================================================
+// 书库统计
+// ============================================================================
+
+export interface LibraryCategoryStat {
+  name: string;
+  total: number;
+  reading: number;
+  finished: number;
+  unread: number;
+}
+
+export interface LibraryStatsResponse {
+  totals: { total: number; reading: number; finished: number; unread: number };
+  pages: { read: number; planned: number };
+  levels: Record<BookLevel, number>;
+  rating: { count: number; avg: number };
+  /** 后端已按藏书数降序排好 */
+  byCategory: LibraryCategoryStat[];
+}
+
+/** 统计口径由后端 computeLibraryStats 单一实现，前端不再各算一套 */
+export async function fetchLibraryStats(): Promise<LibraryStatsResponse> {
+  const res = await fetch(`${API_BASE}/profile/stats`, {
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('获取统计失败');
   const data = await res.json();
   return data.data;
 }

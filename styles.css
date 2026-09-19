@@ -23,6 +23,15 @@
     --color-accent: #4f46e5;
     --color-accent-soft: #eef2ff;
     --color-accent-hover: #4338ca;
+
+    /* 移动端底部导航（Navbar 的 fixed nav）实际占高 = 内容 4.5rem + 手势条安全区。
+       悬浮/吸底元素用它避让，改 nav 内边距时同步改这里 */
+    --bottom-nav-h: calc(4.5rem + env(safe-area-inset-bottom, 0px));
+
+    /* 顶部 fixed 导航实际占高 = py-4(2rem) + 卡片内边距与 logo(3.5rem) = 5.5rem，
+       再加刘海安全区（index.html 开了 viewport-fit=cover，fixed 元素不会自动避让）。
+       各页面用它做顶部留白，改 navbar 内边距时同步改这里 */
+    --top-nav-h: calc(5.5rem + env(safe-area-inset-top, 0px));
     
     /* Radius */
     --radius-sm: 8px;
@@ -75,8 +84,22 @@
   }
 
   /* Focus Ring - Subtle */
+  /* 先用 outline:none 收掉浏览器默认描边：body 恰好撑满视口，默认描边会在刷新时闪成一整圈黑框 */
   :focus-visible {
     @apply outline-none;
+  }
+  /* 光环只给真正的控件，页面容器不参与，否则整页一圈描边 */
+  html:focus-visible, body:focus-visible, #root:focus-visible {
+    box-shadow: none;
+  }
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  summary:focus-visible,
+  [role="button"]:focus-visible,
+  [tabindex]:not([tabindex="-1"]):focus-visible {
     box-shadow: 0 0 0 2px var(--color-accent), 0 0 0 4px var(--color-accent-soft);
   }
 }

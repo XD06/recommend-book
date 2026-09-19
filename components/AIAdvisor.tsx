@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Book, AdvisorResponse, Recommendation, ReadingMood, MOOD_OPTIONS, getBookCoverUrl, hasBookCover } from '../types';
+import { Book, BookStatus, AdvisorResponse, Recommendation, ReadingMood, MOOD_OPTIONS, getBookCoverUrl, hasBookCover, UserProfile } from '../types';
 import { Button } from './Button';
 import { getRecommendationsStream } from '../services/geminiService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
@@ -19,6 +19,7 @@ externalMatches: [],
 
 interface AIAdvisorProps {
   books: Book[];
+  userProfile?: UserProfile;
   onSelectBook: (book: Book) => void;
   onAddBook: (rec: Recommendation) => void;
 }
@@ -47,7 +48,14 @@ const roleConfig: Record<string, { label: string; icon: any; color: string; bg: 
   palate_cleanser:    { label: '放松',   icon: Coffee,   color: 'text-amber-700',    bg: 'bg-amber-50',     border: 'border-amber-200' },
 };
 
-export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAddBook }) => {
+const STARTER_PROMPTS = [
+  '想学点新东西，但不知道从哪本开始',
+  '最近压力大，想来点不费脑子的',
+  '手里同时开着几本，帮我理理顺序',
+  '看看我的阅读有什么盲区',
+];
+
+export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, userProfile, onSelectBook, onAddBook }) => {
   const storageKey = 'ai-advisor-chat';
   const [request, setRequest] = useState('');
   const [selectedMood, setSelectedMood] = useState<ReadingMood | null>(null);
@@ -122,6 +130,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
         {
           userRequest: fullRequest,
           userMood: currentMood || undefined,
+          userProfile,
           library: books,
           conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
         },
@@ -130,6 +139,9 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
           onToolCall: (toolName, label, round) => ai.handleToolCall(toolName, label, round),
           onChunk: (chunk) => ai.handleChunk(chunk),
           onReasoning: ai.handleReasoning,
+          onBookUpdate: (bookId, updates) => {
+            window.dispatchEvent(new CustomEvent('aiBookUpdate', { detail: { bookId, updates } }));
+          },
         },
         controller.signal,
       );
@@ -179,27 +191,69 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
 
   const getLibraryBook = (id: string) => books.find((b) => b.id === id);
   const isInitial = history.length === 0 && !loading;
+  const readingBooks = books.filter((b) => b.status === BookStatus.READING).slice(0, 3);
 
   return (
-    <div className="flex flex-col min-h-[calc(100dvh-8rem)] md:min-h-[calc(100dvh-4rem)] max-w-4xl mx-auto px-4 md:px-0">
-      {/* Header */}
-      <div className={`text-center transition-all duration-500 ${isInitial ? 'pt-12 md:pt-20' : 'pt-4 md:pt-6'}`}>
-        <div className={`rounded-2xl bg-zinc-900 text-white flex items-center justify-center mx-auto mb-3 transition-all duration-500 ${isInitial ? 'w-14 h-14' : 'w-10 h-10'}`}>
-          <Sparkle size={isInitial ? 28 : 20} weight="fill" />
-        </div>
-        <h2 className={`font-bold text-zinc-900 transition-all duration-300 ${isInitial ? 'text-2xl md:text-3xl' : 'text-lg'}`}>
-          {isInitial ? '此刻你想读什么？' : 'AI 阅读顾问'}
-        </h2>
-        {isInitial && (
-          <p className="text-zinc-500 text-sm mt-2 max-w-md mx-auto leading-relaxed">
-            告诉我你的心境、目标或困惑。我会基于你的书库为你设计「主书 + 补充 + 放松」三层阅读组合——不只是推书，而是帮你规划这段时间的阅读路径。
-          </p>
-        )}
-      </div>
+    <div className="flex flex-col min-h-[100dvh] pt-[var(--top-nav-h)] pb-[var(--bottom-nav-h)] md:pb-0 max-w-3xl mx-auto px-4 md:px-0">
+      {isInitial ? (
+        /* 空状态整屏垂直居中：此前标题贴顶、输入区贴底，中间留一大片空白 */
+        <div className="flex-1 flex flex-col justify-center py-8">
+          <div className="text-center">
+            <div className="w-14 h-14 rounded-2xl bg-zinc-900 text-white flex items-center justify-center mx-auto mb-4">
+              <Sparkle size={28} weight="fill" />
+            </div>
+            <h2 className="text-2xl md:text-3xl font-bold text-zinc-900">此刻你想读什么？</h2>
+            <p className="text-zinc-500 text-sm mt-2.5 max-w-md mx-auto leading-relaxed">
+              告诉我你的心境、目标或困惑。我会基于你的书库为你设计「主书 + 补充 + 放松」三层阅读组合——不只是推书，而是帮你规划这段时间的阅读路径。
+            </p>
+          </div>
 
-      {/* 对话历史 */}
-      <div className="flex-1 space-y-6 pt-4">
-        {history.map((turn, turnIdx) => (
+          <div className="mt-7 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {STARTER_PROMPTS.map((q) => (
+              <button
+                key={q}
+                onClick={() => { setRequest(q); inputRef.current?.focus(); }}
+                className="text-left px-4 py-3 rounded-xl border border-zinc-200 bg-white text-sm text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50 active:scale-[0.99] transition-all"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+
+          {readingBooks.length > 0 && (
+            <div className="mt-6 rounded-xl border border-zinc-200/80 bg-white p-4">
+              <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">
+                正在阅读 · 书库共 {books.length} 本
+              </h3>
+              <div className="space-y-2.5">
+                {readingBooks.map((b) => {
+                  const progress = Math.round(b.userData?.progressPercentage || 0);
+                  return (
+                    <button
+                      key={b.id}
+                      onClick={() => onSelectBook(b)}
+                      className="w-full flex items-center gap-3 text-left group"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-zinc-800 truncate group-hover:text-accent-700 transition-colors">
+                          《{b.title}》
+                        </p>
+                        <div className="mt-1.5 h-1 rounded-full bg-zinc-100 overflow-hidden">
+                          <div className="h-full bg-accent-500 rounded-full" style={{ width: `${progress}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-xs font-mono text-zinc-400 shrink-0">{progress}%</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* 对话态不再重复页面标题：每条回复自带机器人头像，标题只会和 fixed 导航打架 */
+        <div className="flex-1 space-y-6 pt-4">
+          {history.map((turn, turnIdx) => (
           <div key={turnIdx} className="space-y-4 animate-slide-up">
             {/* 用户消息 */}
             <div className="flex justify-end">
@@ -239,7 +293,6 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
                 </motion.div>
               </div>
               <div className="flex-1 min-w-0">
-                <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">AI 阅读顾问</h4>
                 <AIActivityPanel
                   phase={ai.phase}
                   toolCalls={ai.toolCalls}
@@ -255,19 +308,20 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
             </div>
           </motion.div>
         )}
-      </div>
+        </div>
+      )}
 
-      {/* 底部输入区 */}
-      <div className="sticky bottom-0 bg-zinc-50/80 backdrop-blur-md pt-4 pb-6 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0 border-t border-zinc-200/50">
-        {/* 心境选择 + 清空对话 */}
-        <div className="flex flex-wrap gap-1.5 justify-center mb-3">
+      {/* 底部输入区 — 移动端要抬到 fixed 底部导航之上，否则心境条和输入框被压住 */}
+      <div className="sticky bottom-[var(--bottom-nav-h)] md:bottom-0 bg-zinc-50/80 backdrop-blur-md pt-4 pb-4 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0 border-t border-zinc-200/50">
+        {/* 心境选择 + 清空对话 — 窄屏单行横滑，避免两行胶囊把输入区顶得太高 */}
+        <div className="flex gap-1.5 mb-3 overflow-x-auto no-scrollbar sm:flex-wrap sm:justify-center sm:overflow-visible">
           {MOOD_OPTIONS.map((mood) => (
             <button
               key={mood.value}
               onClick={() => setSelectedMood(selectedMood === mood.value ? null : mood.value)}
               disabled={loading}
               className={[
-                'px-2.5 py-1 rounded-full text-xs font-medium border transition-colors duration-150',
+                'shrink-0 whitespace-nowrap px-2.5 py-1 rounded-full text-xs font-medium border transition-colors duration-150',
                 'active:scale-[0.97]',
                 selectedMood === mood.value
                   ? 'bg-zinc-900 text-white border-zinc-900'
@@ -282,7 +336,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
           {history.length > 0 && !loading && (
             <button
               onClick={handleClearHistory}
-              className="px-2.5 py-1 rounded-full text-xs font-medium border border-transparent text-zinc-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all active:scale-[0.97] flex items-center gap-1"
+              className="shrink-0 whitespace-nowrap px-2.5 py-1 rounded-full text-xs font-medium border border-transparent text-zinc-400 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all active:scale-[0.97] flex items-center gap-1"
             >
               <Trash size={12} />
               清空对话
@@ -345,7 +399,7 @@ const AdvisorResult: React.FC<{
         <div className="w-9 h-9 rounded-full bg-zinc-900 text-white flex items-center justify-center shrink-0">
           <Robot size={18} weight="fill" />
         </div>
-        <div className="flex-1 min-w-0 space-y-2">
+        <div className="flex-1 min-w-0 max-w-prose space-y-2">
           <div className="rounded-2xl bg-zinc-100 px-4 py-3">
             <p className="text-zinc-700 leading-relaxed text-[15px]">{result.reply}</p>
           </div>
@@ -376,7 +430,7 @@ const AdvisorResult: React.FC<{
           <div className="w-9 h-9 rounded-full bg-zinc-900 text-white flex items-center justify-center shrink-0">
             <Robot size={18} weight="fill" />
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 max-w-prose">
             <h4 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-2">顾问洞察</h4>
             <p className="text-zinc-700 leading-relaxed text-[15px]">{result.analysis}</p>
             {result.readingInsight && (

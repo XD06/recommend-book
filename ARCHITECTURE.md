@@ -51,9 +51,15 @@ graph TD
 
 SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 ```
-{ type: 'phase' | 'tool_call' | 'chunk' | 'reasoning' | 'done' | 'error' }
+{ type: 'phase' | 'tool_call' | 'chunk' | 'reasoning' | 'book_update' | 'done' | 'error' }
 ```
 所有流式端点在 compression 中间件中被跳过（见 `backend/src/index.ts` 的 filter），新增 `/stream` 端点天然继承此行为。
+
+**推荐上下文的两个隐式契约**（断了不报错，只会变"哑"）：
+- **画像必须一路透传**：`App.tsx` 的 `AppContent` 挂载时拉一次 `GET /api/profile`，再作为 prop 传给 `AIAdvisor` / `ReadingAssistant`，由它们放进请求体。任何一环漏传，后端 `【用户画像】` 段与 `get_user_profile` 工具就静默退化为空值，推荐照样出但不再个性化。
+- **AI 写库靠前端落盘**：`update_book_status` 只在服务端内存副本上生效，并通过 SSE `book_update` 事件通知；真正写 SQLite 的是 `App.tsx` 监听 `aiBookUpdate` 后走 `useBookLibrary.setBooks` 的防抖全量保存。所以新增 AI 入口时若忘了派发该事件，模型会"说改了"而数据没变。
+
+**统计口径单一实现**：`backend/src/services/libraryStats.ts` 的 `computeLibraryStats` 同时供 `buildLibraryOverview`（发给模型的概览）和 `GET /api/profile/stats`（统计页）使用。前端不再自行聚合数字，避免页面与模型看到两套口径。
 
 **封面获取**：豆瓣图片有防盗链，封面统一经后端 `GET /api/douban/cover` 代理转发，前端通过 `getBookCoverUrl()` 辅助函数取值，不允许直接引用豆瓣原始 URL。
 
@@ -62,6 +68,7 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 - **Agent 插槽式工具循环**：`aiService` 的循环不认识任何具体工具，只做 `tool_calls` → 执行 → 回传。新增能力只需在 `libraryTools.ts` 加一个工具定义，不改循环代码。
 - **AI 双通道**：优先走 `LITELLM_BASE_URL`（OpenAI 兼容 HTTP + fetch，支持 reasoning 与 tool_calls 增量收集），未配置时回退 DeepSeek SDK。两者在 `aiService` 内收敛为统一接口。
 - **统一错误结构**：业务错误抛 `AppError`（含 statusCode/code/details），全局错误中间件统一输出 `{ success: false, error, code, details }`；Zod 校验失败同样映射到该结构。
+- **常驻注入按书库规模分档**：`buildLibraryOverview` 对 ≤100 本注入完整书名索引，101–300 本注入"在读 + 最近读完 + 各分类最新 3 本"的节选，>300 本不注入书名。三档都在标题里显式写明覆盖了多少本，模型据此判断是否必须调工具——不给声明时它会拿节选当全集。
 - **豆瓣数据三条独立链路**（不要笼统说"缓存优先，代理兜底"）：
   - **搜索** `searchBooks` → **始终走网络**：配了 `DOUBAN_PROXY_URL` 先试代理（重试 3 次），再直连豆瓣 suggest 接口（重试 3 次）。开头虽调用 `loadCache()`，但那只是预备本地详情缓存，搜索结果本身不查缓存、不回写。不需要 Python。
   - **详情** `getBookDetail` → 先查内存缓存（根目录 `cache.json` 全局种子缓存 + `backend/data/user-douban-cache.json` 用户缓存，两者均本地文件不入库）；未命中只能由 `douban_mini` Python 抓取器实时抓取并回写用户缓存，**Node 侧无兜底**，缺 Python 即失败。
@@ -82,6 +89,7 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 - **无自动化测试**：后端 devDependencies 里有 vitest 但仓库没有任何测试文件；`npm run lint` 因缺少 ESLint 配置文件无法执行。当前验证手段是 `npm run build`（前后端）+ `backend/test-*.js` 手工脚本（需服务已启动，多数直连真实 AI API 会消耗 token）。
 - **前端代码在仓库根目录**：`App.tsx`、`components/`、`services/` 等都在根目录而非 `src/`（历史原因，`src/` 仅存 `vite-env.d.ts`）。新文件遵循现有布局。
 - **构建产物单 chunk 警告**：`vite build` 产出单 JS chunk 约 579KB（>500KB 警告），未做代码分割，属已知可接受状态。
+- **没有阅读行为流水**：每日阅读热力图只能按 `startDate` / `completionDate` 两个离散事件计数（早先是按进度 `Math.random()` 模拟，已移除）。要做真正的"每天读了多久"需要新增行为表 + 打卡写入，属路线图 O5 范畴。
 - **认证 Token 存 localStorage**：实现简单但存在 XSS 暴露面，若未来做多端同步需评估改用 HttpOnly Cookie。
 - **前端构建无类型检查**：根目录 `npm run build` 仅 vite 打包；根 tsconfig 的 `npx tsc --noEmit` 长期不绿（历史积累的未使用变量告警）。前端改动的验证以构建通过 + 手工冒烟为准。
 - **历史命名**：`services/geminiService.ts`（实为后端 AI API 客户端）——名字与直觉不符，改动前先确认。

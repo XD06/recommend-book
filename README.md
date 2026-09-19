@@ -59,6 +59,20 @@ docs/                    项目文档与归档
 
 不要把 `.env` 提交进仓库（已在 `.gitignore` 中）。
 
+## 常见问题
+
+**AI 功能报 `fetch failed`（前端显示"抱歉，回答时出了点问题"）**
+
+后端日志会看到 `Agent round 1 调用失败: fetch failed`。这通常不是 Key 或代码问题，而是 Node 没走你本机的代理：Node 18+ 的全局 `fetch` 默认**不读** `HTTP_PROXY` / `HTTPS_PROXY`，而靠本地代理出网的机器上，DNS 常把外网域名解析成 `127.x.x.x` 占位地址，直连必然 `ECONNREFUSED`（`curl` 因为读代理变量所以是通的，容易误判成"网络没问题"）。
+
+```bash
+# 后端启动时带上这个变量，Node 的 fetch 就会像 curl 一样读代理环境变量
+NODE_USE_ENV_PROXY=1 npm run dev     # macOS / Linux
+set "NODE_USE_ENV_PROXY=1" && npm run dev   # Windows cmd（start.bat 已内置）
+```
+
+自查命令：`node -e "require('dns').lookup('你的 LLM 域名',{all:true},(e,a)=>console.log(e||a))"` —— 返回 `127.x` 或 `ECONNREFUSED` 就是这个坑。
+
 ## 相关文档
 
 - 架构说明：[ARCHITECTURE.md](ARCHITECTURE.md)

@@ -200,7 +200,7 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
   };
 
   return (
-    <div className="flex flex-col h-[400px]">
+    <div className="flex flex-col h-[60vh] max-h-[400px] min-h-[260px]">
       {/* 消息列表 */}
       <div
         ref={scrollRef}

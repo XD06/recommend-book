@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ChartPie,
@@ -11,7 +11,8 @@ import {
   Robot,
   X,
 } from '@phosphor-icons/react';
-import { Book, BookStatus, BookLevel, CategoryGroup, getBookCoverUrl, hasBookCover } from '../types';
+import { Book, BookStatus, BookLevel, UserProfile, getBookCoverUrl, hasBookCover } from '../types';
+import { fetchLibraryStats, LibraryStatsResponse } from '../services/bookService';
 import { Card, CardHeader } from './Card';
 import { Badge } from './Badge';
 import { ReadingHeatmap } from './ReadingHeatmap';
@@ -21,62 +22,47 @@ import { ReadingAssistant } from './ReadingAssistant';
 
 interface StatsViewProps {
   books: Book[];
-  categories: CategoryGroup[];
+  userProfile?: UserProfile;
   onSelectBook?: (book: Book) => void;
 }
 
-export const StatsView: React.FC<StatsViewProps> = ({ books, categories, onSelectBook }) => {
+export const StatsView: React.FC<StatsViewProps> = ({ books, userProfile, onSelectBook }) => {
   const [showAssistant, setShowAssistant] = useState(false);
-  const stats = useMemo(() => {
-    const total = books.length;
-    const reading = books.filter((b) => b.status === BookStatus.READING);
-    const finished = books.filter((b) => b.status === BookStatus.FINISHED);
-    const unread = books.filter((b) => b.status === BookStatus.UNREAD);
+  // 统计数字来自后端 computeLibraryStats（与发给模型的概览同一实现）
+  const [serverStats, setServerStats] = useState<LibraryStatsResponse | null>(null);
 
-    // Pages read
-    let totalPagesRead = 0;
-    let totalPages = 0;
-    books.forEach((b) => {
-      if (b.userData) {
-        totalPages += b.userData.totalPages;
-        totalPagesRead +=
-          b.status === BookStatus.FINISHED
-            ? b.userData.totalPages
-            : b.userData.currentPage;
-      }
-    });
-
-    // Level distribution
-    const levels = {
-      [BookLevel.BASIC]: books.filter((b) => b.level === BookLevel.BASIC).length,
-      [BookLevel.ADVANCED]: books.filter((b) => b.level === BookLevel.ADVANCED).length,
-      [BookLevel.EXPERT]: books.filter((b) => b.level === BookLevel.EXPERT).length,
-    };
-
-    // Rating average
-    const ratedBooks = books.filter((b) => b.rating);
-    const avgRating =
-      ratedBooks.length > 0
-        ? ratedBooks.reduce((sum, b) => sum + (b.rating || 0), 0) / ratedBooks.length
-        : 0;
-
-    return {
-      total,
-      reading: reading.length,
-      finished: finished.length,
-      unread: unread.length,
-      readingBooks: reading,
-      finishedBooks: finished,
-      totalPagesRead,
-      totalPages,
-      levels,
-      avgRating,
-      ratedCount: ratedBooks.length,
+  useEffect(() => {
+    let cancelled = false;
+    // 延后到 App 的 500ms 全量保存之后，否则读到的是上一版数据
+    const timer = setTimeout(() => {
+      fetchLibraryStats()
+        .then((s) => { if (!cancelled) setServerStats(s); })
+        .catch((err) => console.warn('[Stats] 统计加载失败:', err.message));
+    }, 700);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
     };
   }, [books]);
 
+  const lists = useMemo(() => ({
+    readingBooks: books.filter((b) => b.status === BookStatus.READING),
+  }), [books]);
+
+  const stats = {
+    ...lists,
+    total: serverStats?.totals.total ?? 0,
+    reading: serverStats?.totals.reading ?? 0,
+    finished: serverStats?.totals.finished ?? 0,
+    totalPagesRead: serverStats?.pages.read ?? 0,
+    levels: serverStats?.levels ?? { [BookLevel.BASIC]: 0, [BookLevel.ADVANCED]: 0, [BookLevel.EXPERT]: 0 },
+    avgRating: serverStats?.rating.avg ?? 0,
+    ratedCount: serverStats?.rating.count ?? 0,
+  };
+  const byCategory = serverStats?.byCategory ?? [];
+
   return (
-    <div className="space-y-6 pt-20 pb-8">
+    <div className="space-y-6 pt-[var(--top-nav-h)] pb-[calc(var(--bottom-nav-h)_+_1rem)] md:pb-8">
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
@@ -84,7 +70,9 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories, onSelec
         transition={{ duration: 0.5, ease: [0.23, 1, 0.32, 1] }}
       >
         <h1 className="text-2xl font-bold text-zinc-900">阅读统计</h1>
-        <p className="text-zinc-500 mt-1">追踪你的阅读进度和习惯</p>
+        <p className="text-zinc-500 mt-1">
+          {books.length > 0 && !serverStats ? '统计加载中…' : '追踪你的阅读进度和习惯'}
+        </p>
       </motion.div>
 
       {/* Overview Cards */}
@@ -219,8 +207,7 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories, onSelec
           <Card>
             <CardHeader title="热门分类" icon={<TrendUp className="w-5 h-5 text-accent-600" />} />
             <div className="space-y-2">
-              {categories
-                .sort((a, b) => b.count - a.count)
+              {byCategory
                 .slice(0, 5)
                 .map((cat, idx) => (
                   <div
@@ -231,10 +218,10 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories, onSelec
                       <RankBadge rank={idx + 1} />
                       <span className="text-sm font-medium text-zinc-700">{cat.name}</span>
                     </div>
-                    <span className="text-xs font-mono text-zinc-400">{cat.count} 本</span>
+                    <span className="text-xs font-mono text-zinc-400">{cat.total} 本</span>
                   </div>
                 ))}
-              {categories.length === 0 && (
+              {byCategory.length === 0 && (
                 <p className="text-sm text-zinc-400 text-center py-4">暂无数据</p>
               )}
             </div>
@@ -274,7 +261,7 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories, onSelec
         animate={{ scale: 1, opacity: 1 }}
         transition={{ delay: 0.5, type: 'spring', stiffness: 200 }}
         onClick={() => setShowAssistant(true)}
-        className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-2xl bg-zinc-900 text-white shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
+        className="fixed bottom-[calc(var(--bottom-nav-h)_+_0.75rem)] md:bottom-6 right-6 z-40 w-14 h-14 rounded-2xl bg-zinc-900 text-white shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
       >
         <Robot size={24} weight="fill" />
         <span className="absolute -top-1 -right-1 w-3 h-3 bg-accent-500 rounded-full border-2 border-white" />
@@ -316,7 +303,7 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, categories, onSelec
                 </button>
               </div>
               <div className="flex-1 overflow-hidden p-4">
-                <ReadingAssistant library={books} />
+                <ReadingAssistant library={books} userProfile={userProfile} />
               </div>
             </motion.div>
           </motion.div>

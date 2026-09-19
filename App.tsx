@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Book, CategoryGroup, BookStatus, CategoryMeta, Recommendation } from './types';
+import { Book, CategoryGroup, BookStatus, CategoryMeta, Recommendation, UserProfile } from './types';
 import { IngestionWizard } from './components/IngestionWizard';
 import { BookDetail } from './components/BookDetail';
 import { LibraryView } from './components/LibraryView';
@@ -13,7 +13,7 @@ import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
 import { LoginPage } from './components/LoginPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { reorganizeLibrary } from './services/geminiService';
-import { fetchBooks, saveBooks, fetchCategoryMeta, saveCategoryMeta } from './services/bookService';
+import { fetchBooks, saveBooks, fetchCategoryMeta, saveCategoryMeta, fetchProfile, saveProfile } from './services/bookService';
 import { isLoggedIn, logout, fetchCurrentUser, AuthUser } from './services/authService';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -142,6 +142,27 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
     loadFromAPI();
   }, [loadFromAPI]);
 
+  // 用户画像：AI 推荐的个性化输入。不加载则 aiService 的【用户画像】段恒空、
+  // get_user_profile 工具恒返回"用户尚未设置画像信息"
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchProfile()
+      .then((p) => { if (!cancelled) setUserProfile(p); })
+      .catch((err) => console.warn('[Profile] 画像加载失败，推荐将以无画像模式运行:', err.message));
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSaveProfile = async (profile: UserProfile) => {
+    try {
+      setUserProfile(await saveProfile(profile));
+      showSuccess('阅读画像已保存');
+    } catch (e: any) {
+      showError(`保存画像失败: ${e.message || '未知错误'}`);
+    }
+  };
+
   const categories = React.useMemo(() => {
     const groups: Record<string, number> = {};
     books.forEach((b) => { groups[b.category] = (groups[b.category] || 0) + 1; });
@@ -177,6 +198,21 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
     window.addEventListener('openBookDetail', handleOpenBookDetail as EventListener);
     return () => window.removeEventListener('openBookDetail', handleOpenBookDetail as EventListener);
   }, []);
+
+  // AI 写工具（update_book_status）的落地端：后端只发 SSE 事件，真正改数据的是这里
+  useEffect(() => {
+    const handleAIBookUpdate = (e: CustomEvent<{ bookId: string; updates: Partial<Book> }>) => {
+      const { bookId, updates } = e.detail;
+      const target = books.find((b) => b.id === bookId);
+      if (!target) return;
+      const merged = { ...target, ...updates, updatedAt: new Date().toISOString() };
+      setBooks(books.map((b) => (b.id === bookId ? merged : b)));
+      setSelectedBook((prev) => (prev && prev.id === bookId ? { ...prev, ...updates } : prev));
+      showInfo('AI 已更新书籍状态');
+    };
+    window.addEventListener('aiBookUpdate', handleAIBookUpdate as EventListener);
+    return () => window.removeEventListener('aiBookUpdate', handleAIBookUpdate as EventListener);
+  }, [books, setBooks, showInfo]);
 
   const handleAddRecommendation = (rec: Recommendation) => {
     if (books.some((b) => b.title.toLowerCase() === rec.title.toLowerCase())) {
@@ -296,7 +332,7 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-3 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
+          <div className="w-8 h-8 border-[3px] border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
           <p className="text-sm text-zinc-500">加载书库中…</p>
         </div>
       </div>
@@ -374,12 +410,17 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
               {activeTab === 'advisor' && (
                 <AIAdvisor
                   books={books}
+                  userProfile={userProfile ?? undefined}
                   onSelectBook={setSelectedBook}
                   onAddBook={handleAddRecommendation}
                 />
               )}
               {activeTab === 'stats' && (
-                <StatsView books={books} categories={categories} onSelectBook={setSelectedBook} />
+                <StatsView
+                  books={books}
+                  userProfile={userProfile ?? undefined}
+                  onSelectBook={setSelectedBook}
+                />
               )}
               {activeTab === 'settings' && (
                 <DataManagement
@@ -393,6 +434,9 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
                   }}
                   onReorganize={handleReorganizeLibrary}
                   isReorganizing={isReorganizing}
+                  userProfile={userProfile}
+                  availableCategories={categories.map((c) => c.name)}
+                  onSaveProfile={handleSaveProfile}
                 />
               )}
             </motion.div>
@@ -446,7 +490,7 @@ const App: React.FC = () => {
   if (!authChecked) {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
-        <div className="w-8 h-8 border-3 border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
+        <div className="w-8 h-8 border-[3px] border-zinc-200 border-t-zinc-900 rounded-full animate-spin" />
       </div>
     );
   }

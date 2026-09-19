@@ -19,7 +19,7 @@ router.use(requireAuth);
 // 辅助函数：数据库行 → 前端 Book 对象
 // ============================================================================
 
-interface BookRow {
+export interface BookRow {
   id: string;
   user_id: string;
   title: string;
@@ -44,7 +44,7 @@ interface BookRow {
   updated_at: string;
 }
 
-function rowToBook(row: BookRow): any {
+export function rowToBook(row: BookRow): any {
   return {
     id: row.id,
     title: row.title,

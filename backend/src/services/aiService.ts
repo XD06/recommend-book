@@ -1279,12 +1279,13 @@ export async function getRecommendationsStream(
   onToolCall?: (toolName: string, label: string, round: number) => void,
   signal?: AbortSignal,
   onReasoning?: (text: string) => void,
+  onBookUpdate?: BookUpdateCallback,
 ): Promise<AIResponse> {
   // 使用 withTools 统一构建工具说明（包含新增的分析型工具）
 const systemPrompt = withTools(
 READING_ADVISOR_SYSTEM_PROMPT,
 3,
-`书库概览和阅读品味画像已在上下文中提供。如需更详细的信息，可使用工具查询（最多3轮），但不要为了使用工具而使用工具——如果已有信息足够回答，直接给出推荐。`,
+`书库概览和阅读品味画像已在上下文中提供。如需更详细的信息，可使用工具查询（最多3轮），但不要为了使用工具而使用工具——如果已有信息足够回答，直接回答即可（寒暄或笼统请求按对话模式简短回应，不要输出书单）。`,
 );
 
   let userPrompt = buildLibraryOverview(context.library);
@@ -1324,10 +1325,14 @@ READING_ADVISOR_SYSTEM_PROMPT,
   userPrompt += `\n【用户请求】\n${context.userRequest}`;
   if (context.userMood) userPrompt += `\n当前心情: ${context.userMood}`;
 
+  // 系统提示有 370+ 行且几乎全在讲怎么推荐，模式判定写在中间会被带偏：
+  // 一句"你好"也会直接产出整份书单。把模式闸门压到最后一条，利用尾部位置。
+  userPrompt += `\n\n第一步只做模式判断（见系统提示"响应模式判断"）：寒暄、闲聊、问你是谁、需求太笼统 → mode="conversation"，reply 控制在 150 字内、不给书单、不必调用工具；只有出现明确学习目标或具体阅读需求时才用 recommendation。`;
+
   const content = await callAgentStream(
     systemPrompt, userPrompt, context.library, onChunk, 0.7, true,
     onPhase, context.conversationHistory?.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    context.userProfile, onToolCall, signal, undefined, onReasoning
+    context.userProfile, onToolCall, signal, onBookUpdate, onReasoning
   );
   return parseAIJSON<AIResponse>(content);
 }

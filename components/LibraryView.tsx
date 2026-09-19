@@ -44,6 +44,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
   const [filterLevel, setFilterLevel] = useState<FilterLevel>('all');
   const [showFilters, setShowFilters] = useState(false);
+  const [showInsights, setShowInsights] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>('recent');
 
   // Stats
@@ -106,7 +107,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   );
 
   return (
-    <div className="space-y-6 pt-20 pb-24 md:pb-8">
+    <div className="space-y-6 pt-[var(--top-nav-h)] pb-[calc(var(--bottom-nav-h)_+_1rem)] md:pb-8">
       {/* Hero Section - Current Reading */}
       {readingBooks.length > 0 && (
         <motion.section
@@ -400,15 +401,25 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         )}
         </motion.section>
 
-        {/* Sidebar */}
+        {/* Sidebar — 窄屏折叠为可展开区块，不直接隐藏时间线/热力图 */}
         <motion.aside
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5, delay: 0.4 }}
-          className="hidden lg:block space-y-6"
+          className="min-w-0"
         >
-          <ReadingTimeline books={books} onSelectBook={onSelectBook} />
-          <ReadingHeatmap books={books} />
+          <button
+            type="button"
+            onClick={() => setShowInsights((v) => !v)}
+            className="mb-3 w-full flex items-center justify-between px-4 py-3 rounded-xl bg-zinc-50 border border-zinc-200/80 text-sm font-medium text-zinc-700 lg:hidden"
+          >
+            阅读概览
+            <span className="text-xs text-zinc-400">{showInsights ? '收起' : '展开'}</span>
+          </button>
+          <div className={['space-y-6', showInsights ? '' : 'hidden lg:block'].join(' ')}>
+            <ReadingTimeline books={books} onSelectBook={onSelectBook} />
+            <ReadingHeatmap books={books} />
+          </div>
         </motion.aside>
       </div>
     </div>
