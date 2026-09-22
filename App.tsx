@@ -146,13 +146,25 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
   // get_user_profile 工具恒返回"用户尚未设置画像信息"
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchProfile()
-      .then((p) => { if (!cancelled) setUserProfile(p); })
-      .catch((err) => console.warn('[Profile] 画像加载失败，推荐将以无画像模式运行:', err.message));
-    return () => { cancelled = true; };
+  const refreshProfile = React.useCallback(() => {
+    return fetchProfile()
+      .then((p) => { setUserProfile(p); return p; })
+      .catch((err) => {
+        console.warn('[Profile] 画像加载失败，推荐将以无画像模式运行:', err.message);
+        return null;
+      });
   }, []);
+
+  React.useEffect(() => {
+    refreshProfile();
+  }, [refreshProfile]);
+
+  // Agent 的 update_user_profile 工具会在对话中改写画像，而设置页表单以这里缓存的
+  // 快照为初值、保存时把表单字段整体 PUT 回去 —— 不重新拉一次，进设置页点保存
+  // 就会把 AI 刚记住的偏好按旧值覆盖掉
+  React.useEffect(() => {
+    if (activeTab === 'settings') refreshProfile();
+  }, [activeTab, refreshProfile]);
 
   const handleSaveProfile = async (profile: UserProfile) => {
     try {
@@ -410,7 +422,6 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
               {activeTab === 'advisor' && (
                 <AIAdvisor
                   books={books}
-                  userProfile={userProfile ?? undefined}
                   onSelectBook={setSelectedBook}
                   onAddBook={handleAddRecommendation}
                 />
@@ -418,7 +429,6 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
               {activeTab === 'stats' && (
                 <StatsView
                   books={books}
-                  userProfile={userProfile ?? undefined}
                   onSelectBook={setSelectedBook}
                 />
               )}
@@ -449,7 +459,6 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
         {selectedBook && (
           <BookDetail
             book={selectedBook}
-            books={books}
             onClose={() => setSelectedBook(null)}
             onUpdate={handleBookUpdate}
           />

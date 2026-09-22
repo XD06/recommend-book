@@ -11,7 +11,7 @@ import {
   Robot,
   X,
 } from '@phosphor-icons/react';
-import { Book, BookStatus, BookLevel, UserProfile, getBookCoverUrl, hasBookCover } from '../types';
+import { Book, BookStatus, BookLevel, getBookCoverUrl, hasBookCover } from '../types';
 import { fetchLibraryStats, LibraryStatsResponse } from '../services/bookService';
 import { Card, CardHeader } from './Card';
 import { Badge } from './Badge';
@@ -22,11 +22,10 @@ import { ReadingAssistant } from './ReadingAssistant';
 
 interface StatsViewProps {
   books: Book[];
-  userProfile?: UserProfile;
   onSelectBook?: (book: Book) => void;
 }
 
-export const StatsView: React.FC<StatsViewProps> = ({ books, userProfile, onSelectBook }) => {
+export const StatsView: React.FC<StatsViewProps> = ({ books, onSelectBook }) => {
   const [showAssistant, setShowAssistant] = useState(false);
   // 统计数字来自后端 computeLibraryStats（与发给模型的概览同一实现）
   const [serverStats, setServerStats] = useState<LibraryStatsResponse | null>(null);
@@ -303,7 +302,7 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, userProfile, onSele
                 </button>
               </div>
               <div className="flex-1 overflow-hidden p-4">
-                <ReadingAssistant library={books} userProfile={userProfile} />
+                <ReadingAssistant />
               </div>
             </motion.div>
           </motion.div>

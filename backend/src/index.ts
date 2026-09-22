@@ -80,7 +80,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use((req, res, next) => {
   if (req.method === 'POST' && req.path.startsWith('/api/ai/')) {
     const bodySize = req.body ? JSON.stringify(req.body).length : 0;
-    console.log(`[AI] ✓ body parsed: ${(bodySize / 1024).toFixed(1)}KB, library=${req.body?.library?.length || 0} books`);
+    // 流式端点不再携带书库，body 体积应该降到 KB 级；这里的大小异常就是客户端又开始传全量库
+    console.log(`[AI] ✓ body parsed: ${(bodySize / 1024).toFixed(1)}KB`);
   }
   next();
 });

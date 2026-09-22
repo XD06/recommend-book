@@ -184,8 +184,12 @@ reply?: string;               // 对话模式回复
 analysis: string;
 readingInsight?: string;
 recommendationStrategy?: string;
+/** 客户端为本次推荐生成的归组 id，随采纳反馈一起上报（后端不生成） */
+requestId?: string;
 libraryMatches: {
 bookId: string;
+/** 模型给出的书名，服务端用它反查校验 bookId */
+title?: string;
 reason: string;
 timing?: string;
 prerequisite?: string | null;
@@ -194,6 +198,13 @@ role?: 'primary' | 'complement' | 'palate_cleanser';
 }[];
 externalMatches: Recommendation[];
 suggestedQuestions?: string[];
+/** 服务端校验统计：bookId 对不上书库时被丢弃的条目数与书名 */
+matchValidation?: {
+kept: number;
+repaired: number;
+dropped: number;
+droppedTitles: string[];
+};
 }
 
 export interface DebugLogItem {

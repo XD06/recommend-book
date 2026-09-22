@@ -32,7 +32,6 @@ import {
 
 interface BookDetailProps {
   book: Book;
-  books: Book[];
   onClose: () => void;
   onUpdate: (updatedBook: Book, silent?: boolean) => void;
 }
@@ -49,7 +48,7 @@ const levelColors: Record<BookLevel, string> = {
   [BookLevel.EXPERT]: 'bg-danger-50 text-danger-700 border-danger-200',
 };
 
-export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, onUpdate }) => {
+export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate }) => {
   const { showSuccess, showError } = useToast();
   const [isActivating, setIsActivating] = useState(false);
   const [activeTab, setActiveTab] = useState<'insight' | 'progress' | 'douban' | 'qa'>('insight');
@@ -140,13 +139,17 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, books, onClose, on
           subcategory: book.subcategory,
           totalPages,
           doubanData: doubanDataForAI,
-          library: books,
         },
         {
           onPhase: (phase) => ai.handlePhase(phase),
           onToolCall: (toolName, label, round) => ai.handleToolCall(toolName, label, round),
           onChunk: (chunk) => ai.handleChunk(chunk),
           onReasoning: ai.handleReasoning,
+          // 解读也能改书（Agent 有 update_book_status），不接住这条事件，
+          // 下面 onUpdate 触发的全量保存会把 AI 刚写进 SQLite 的状态冲掉
+          onBookUpdate: (bookId, updates) => {
+            window.dispatchEvent(new CustomEvent('aiBookUpdate', { detail: { bookId, updates } }));
+          },
         },
         controller.signal,
       );
@@ -689,7 +692,7 @@ generatingLabel="正在生成解读内容"
                     exit={{ opacity: 0, y: -10 }}
                     transition={{ duration: 0.2 }}
                   >
-                    <BookQA book={book} library={books} />
+                    <BookQA book={book} />
                   </motion.div>
                 )}
 

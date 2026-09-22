@@ -9,10 +9,12 @@
  * - LRU 缓存避免重复搜索（30 分钟 / 1 小时）
  * - 优雅降级：API Key 未配置时完全隐藏工具
  * - 成本控制：默认 5 条结果，限制 fetch 字符数
- * - 健壮性：独立超时(15s) + 单次会话调用上限(5次) + 成本汇总日志
+ * - 健壮性：独立超时(15s) + 单次请求调用上限(5次) + 成本汇总日志
  *
  * Exa API 文档: https://exa.ai/docs/reference/search
  */
+
+import { AgentContext } from '../types';
 
 // ============================================================================
 // 配置
@@ -24,8 +26,8 @@ const EXA_CONTENTS_URL = 'https://api.exa.ai/contents';
 /** Exa API 独立超时（毫秒）— 不受 AI_TIMEOUT_MS 影响 */
 const EXA_TIMEOUT_MS = 15000;
 
-/** 单次会话最大 Web 工具调用次数（防止 AI 滥用） */
-const MAX_WEB_CALLS_PER_SESSION = 5;
+/** 单次 Agent 请求最大 Web 工具调用次数（防止 AI 滥用） */
+const MAX_WEB_CALLS_PER_REQUEST = 5;
 
 /** 获取 Exa API Key（运行时判断，确保 dotenv 已加载） */
 export function getExaApiKey(): string | undefined {
@@ -38,32 +40,27 @@ export function isWebSearchEnabled(): boolean {
 }
 
 // ============================================================================
-// 会话级调用计数 + 成本汇总
+// 请求级调用计数 + 成本汇总
 // ============================================================================
 
-let sessionCallCount = 0;
-let sessionTotalCost = 0;
-
-/** 重置会话计数（每次新请求时由 clearWebCache 触发） */
-function resetSessionStats() {
-  if (sessionCallCount > 0 || sessionTotalCost > 0) {
-    console.log(`[Exa] 会话统计: ${sessionCallCount} 次调用, 总成本 $${sessionTotalCost.toFixed(4)}`);
-  }
-  sessionCallCount = 0;
-  sessionTotalCost = 0;
-}
-
 /** 记录一次调用和成本 */
-function recordCall(cost?: number) {
-  sessionCallCount++;
+function recordCall(ctx: AgentContext, cost?: number) {
+  ctx.webCalls++;
   if (cost && cost > 0) {
-    sessionTotalCost += cost;
+    ctx.webCostUsd += cost;
   }
 }
 
-/** 检查是否超出会话调用上限 */
-function isSessionLimitReached(): boolean {
-  return sessionCallCount >= MAX_WEB_CALLS_PER_SESSION;
+/** 检查是否超出本次请求的调用上限 */
+function isCallLimitReached(ctx: AgentContext): boolean {
+  return ctx.webCalls >= MAX_WEB_CALLS_PER_REQUEST;
+}
+
+/** 打印本次请求的 Exa 用量 */
+export function logWebUsage(ctx: AgentContext): void {
+  if (ctx.webCalls > 0) {
+    console.log(`[Exa] 本次请求用量: ${ctx.webCalls} 次调用, 成本 $${ctx.webCostUsd.toFixed(4)}`);
+  }
 }
 
 // ============================================================================
@@ -230,12 +227,6 @@ function setCachedWebResult(toolName: string, args: Record<string, any>, result:
     if (firstKey) webCache.delete(firstKey);
   }
   webCache.set(key, { result, timestamp: Date.now() });
-}
-
-/** 清空 Web 缓存（每次新请求时调用，同时重置会话统计） */
-export function clearWebCache(): void {
-  webCache.clear();
-  resetSessionStats();
 }
 
 // ============================================================================
@@ -441,13 +432,14 @@ function formatFetchResults(
 export async function executeWebTool(
   toolName: string,
   args: Record<string, any>,
+  ctx: AgentContext,
 ): Promise<string> {
   try {
-    // 会话调用上限检查（缓存命中不计入）
-    if (isSessionLimitReached()) {
-      console.warn(`[Exa] 会话调用上限已达 ${MAX_WEB_CALLS_PER_SESSION} 次，拒绝请求`);
+    // 调用上限检查（缓存命中不计入）
+    if (isCallLimitReached(ctx)) {
+      console.warn(`[Exa] 本次请求调用上限已达 ${MAX_WEB_CALLS_PER_REQUEST} 次，拒绝请求`);
       return JSON.stringify({
-        error: `Web 搜索调用次数已达上限（${MAX_WEB_CALLS_PER_SESSION} 次/会话），请基于已有信息回答用户问题。`,
+        error: `Web 搜索调用次数已达上限（${MAX_WEB_CALLS_PER_REQUEST} 次/请求），请基于已有信息回答用户问题。`,
         hint: '可以综合之前搜索到的结果回答用户，或告知用户网络搜索额度已用完。',
       });
     }
@@ -479,9 +471,9 @@ export async function executeWebTool(
         const cost = response.costDollars?.total;
 
         // 记录调用和成本
-        recordCall(cost);
+        recordCall(ctx, cost);
 
-        console.log(`[Exa] web_search 完成 (${elapsed}ms): ${response.results.length} 条结果, cost=$${cost?.toFixed(4) || '?'}, sessionTotal=${sessionCallCount}/${MAX_WEB_CALLS_PER_SESSION}`);
+        console.log(`[Exa] web_search 完成 (${elapsed}ms): ${response.results.length} 条结果, cost=$${cost?.toFixed(4) || '?'}, requestTotal=${ctx.webCalls}/${MAX_WEB_CALLS_PER_REQUEST}`);
 
         const formatted = formatSearchResults(query, category, response.results, cost);
 
@@ -519,7 +511,7 @@ export async function executeWebTool(
         console.log(`[Exa] web_fetch 完成 (${elapsed}ms): ${response.results.length} 个页面`);
 
         // 记录调用（fetch 不返回成本，但不计入也不影响统计准确性）
-        recordCall();
+        recordCall(ctx);
 
         const formatted = formatFetchResults(limitedUrls, response.results);
 

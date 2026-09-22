@@ -191,15 +191,36 @@ export interface AIRequestContext {
   userRequest: string;
   userMood?: string;
   userProfile?: UserProfile;
-  
+
   // 可选的上下文限制
   categoryContext?: CategoryContext;  // 如果指定了分类，只在该分类下搜索
-  
+
   // 书库数据（根据上下文动态筛选）
   library: Book[];
-  
+
   // 历史对话（用于多轮对话）
   conversationHistory?: ChatMessage[];
+}
+
+// ============================================================================
+// Agent 请求上下文
+// ============================================================================
+
+/**
+ * 一次 Agent 调用一份。书库与画像从 SQLite 载入，工具结果缓存与 Web 调用计数
+ * 随请求生死——放在模块级会让并发请求互清缓存，并把"每次对话 5 次 Web 调用"
+ * 变成"整个进程 5 次"。
+ */
+export interface AgentContext {
+  userId: string;
+  library: Book[];
+  userProfile?: UserProfile;
+  /** 工具结果缓存，key 为 `toolName:JSON.stringify(args)` */
+  toolCache: Map<string, string>;
+  /** 本次请求已消耗的 Exa 调用次数 */
+  webCalls: number;
+  /** 本次请求的 Exa 累计成本（美元） */
+  webCostUsd: number;
 }
 
 export interface ChatMessage {
@@ -219,15 +240,27 @@ recommendationStrategy?: string;     // 推荐策略说明
 libraryMatches?: LibraryMatch[];
 externalMatches?: ExternalRecommendation[];
 suggestedQuestions?: string[];       // 建议的后续问题
+/** 服务端对 libraryMatches 的校验统计（非模型产出，由 recommendValidation 附加） */
+matchValidation?: MatchValidation;
 }
 
 export interface LibraryMatch {
   bookId: string;
+  /** 模型给出的书名，服务端用它反查校验 bookId（提示词要求必填，实际可能缺失） */
+  title?: string;
   reason: string;
   relevanceScore: number;      // 0-1 相关度评分
   timing?: string;             // 为什么是现在读
   prerequisite?: string | null; // 前置阅读要求
   role?: 'primary' | 'complement' | 'palate_cleanser';  // 三层推荐角色
+}
+
+/** 服务端对 libraryMatches 的校验结果，随响应回传给前端展示 */
+export interface MatchValidation {
+  kept: number;
+  repaired: number;
+  dropped: number;
+  droppedTitles: string[];
 }
 
 export interface ExternalRecommendation {

@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Book, BookStatus, AdvisorResponse, Recommendation, ReadingMood, MOOD_OPTIONS, getBookCoverUrl, hasBookCover, UserProfile } from '../types';
+import { Book, BookStatus, AdvisorResponse, Recommendation, ReadingMood, MOOD_OPTIONS, getBookCoverUrl, hasBookCover } from '../types';
 import { Button } from './Button';
-import { getRecommendationsStream } from '../services/geminiService';
+import { getRecommendationsStream, sendRecommendationFeedback, RecommendationFeedbackItem } from '../services/geminiService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import {
   Sparkle, PaperPlaneTilt, Plus, Star, Robot, Stack, Lightbulb, Clock, Eye, CheckCircle,
-  BookOpen, Books, Coffee, Trash,
+  BookOpen, Books, Coffee, Trash, BookmarkSimple, Prohibit,
 } from '@phosphor-icons/react';
 
 const fallbackResponse: AdvisorResponse = {
@@ -19,7 +19,6 @@ externalMatches: [],
 
 interface AIAdvisorProps {
   books: Book[];
-  userProfile?: UserProfile;
   onSelectBook: (book: Book) => void;
   onAddBook: (rec: Recommendation) => void;
 }
@@ -55,7 +54,7 @@ const STARTER_PROMPTS = [
   '看看我的阅读有什么盲区',
 ];
 
-export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, userProfile, onSelectBook, onAddBook }) => {
+export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAddBook }) => {
   const storageKey = 'ai-advisor-chat';
   const [request, setRequest] = useState('');
   const [selectedMood, setSelectedMood] = useState<ReadingMood | null>(null);
@@ -103,6 +102,8 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, userProfile, onSele
 
     const controller = new AbortController();
     abortRef.current = controller;
+    // 本次推荐的归组 id：采纳反馈靠它把"同一次推的 5 本"串起来
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
     try {
       const moodContext = currentMood
@@ -130,8 +131,6 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, userProfile, onSele
         {
           userRequest: fullRequest,
           userMood: currentMood || undefined,
-          userProfile,
-          library: books,
           conversationHistory: conversationHistory.length > 0 ? conversationHistory : undefined,
         },
         {
@@ -149,6 +148,7 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, userProfile, onSele
       const finalResult: AdvisorResponse = data || fallbackResponse;
       finalResult.libraryMatches = finalResult.libraryMatches || [];
       finalResult.externalMatches = finalResult.externalMatches || [];
+      finalResult.requestId = requestId;
       // 确保对话模式有 reply，推荐模式有 analysis
       if (finalResult.mode === 'conversation' && !finalResult.reply) {
         finalResult.reply = finalResult.analysis || '';
@@ -385,6 +385,41 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, userProfile, onSele
 // ============================================================================
 // 结果展示组件
 // ============================================================================
+
+/**
+ * 采纳反馈按钮。"推得准不准"目前没有别的客观依据 —— 提示词、模型自评都答不了这个问题，
+ * 所以每条推荐都得给得出这个动作。已选中的保持高亮，允许改选，同一动作不重复上报。
+ */
+const FeedbackButtons: React.FC<{
+  chosen?: 'want' | 'skip';
+  onPick: (action: 'want' | 'skip') => void;
+}> = ({ chosen, onPick }) => {
+  const base = 'flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] transition-all active:scale-[0.97]';
+  const idle = 'border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50';
+  const wantCls = `${base} ${chosen === 'want' ? 'border-accent-200 bg-accent-50 text-accent-700 font-semibold' : idle}`;
+  const skipCls = `${base} ${chosen === 'skip' ? 'border-zinc-300 bg-zinc-100 text-zinc-700 font-semibold' : idle}`;
+  return (
+    <div className="mt-3 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        aria-pressed={chosen === 'want'}
+        className={wantCls}
+        onClick={(e) => { e.stopPropagation(); if (chosen !== 'want') onPick('want'); }}
+      >
+        <BookmarkSimple size={12} weight={chosen === 'want' ? 'fill' : 'regular'} /> 想读
+      </button>
+      <button
+        type="button"
+        aria-pressed={chosen === 'skip'}
+        className={skipCls}
+        onClick={(e) => { e.stopPropagation(); if (chosen !== 'skip') onPick('skip'); }}
+      >
+        <Prohibit size={12} weight={chosen === 'skip' ? 'fill' : 'regular'} /> 跳过
+      </button>
+    </div>
+  );
+};
+
 const AdvisorResult: React.FC<{
   result: AdvisorResponse;
   getLibraryBook: (id: string) => Book | undefined;
@@ -392,6 +427,26 @@ const AdvisorResult: React.FC<{
   onAddBook: (rec: Recommendation) => void;
   onQuickReply?: (text: string) => void;
 }> = ({ result, getLibraryBook, onSelectBook, onAddBook, onQuickReply }) => {
+  // 上报失败要回滚按钮状态：反馈是评估数据，不该弹错误框打断对话
+  const [feedback, setFeedback] = useState<Record<string, 'want' | 'skip'>>({});
+
+  const pickFeedback = (
+    key: string,
+    item: Omit<RecommendationFeedbackItem, 'action'>,
+  ) => (action: 'want' | 'skip') => {
+    const restore = feedback[key];
+    setFeedback((prev) => ({ ...prev, [key]: action }));
+    void sendRecommendationFeedback([{ ...item, action }], result.requestId).then((ok) => {
+      if (ok) return;
+      setFeedback((prev) => {
+        const next = { ...prev };
+        if (restore) next[key] = restore;
+        else delete next[key];
+        return next;
+      });
+    });
+  };
+
   // 对话模式：简洁的聊天气泡
   if (result.mode === 'conversation' && result.reply) {
     return (
@@ -449,14 +504,21 @@ const AdvisorResult: React.FC<{
         </div>
       </div>
 
-      {/* 书库匹配 */}
-      {result.libraryMatches.length > 0 && (
+      {/* 书库匹配 — 模型给的 bookId 已在服务端对齐真实书库，这里显示它过滤掉了多少 */}
+      {(result.libraryMatches.length > 0 || (result.matchValidation?.dropped ?? 0) > 0) && (
         <div>
           <div className="flex items-center gap-2 mb-3">
             <Stack size={18} className="text-accent-600" />
             <h3 className="font-semibold text-zinc-900 text-sm">书库匹配</h3>
             <span className="badge bg-accent-50 text-accent-700">{result.libraryMatches.length} 本</span>
           </div>
+          {(result.matchValidation?.dropped ?? 0) > 0 && (
+            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+              {result.matchValidation?.dropped} 条推荐在书库里没找到对应的书，已过滤掉
+              {(result.matchValidation?.droppedTitles ?? []).filter((t) => !t.startsWith('(')).length > 0 &&
+                `：${(result.matchValidation?.droppedTitles ?? []).filter((t) => !t.startsWith('(')).join('、')}`}
+            </p>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {result.libraryMatches.map((match, idx) => {
               const book = getLibraryBook(match.bookId);
@@ -501,6 +563,16 @@ const AdvisorResult: React.FC<{
                       )}
                     </div>
                   </div>
+                  <FeedbackButtons
+                    chosen={feedback[book.id]}
+                    onPick={pickFeedback(book.id, {
+                      title: book.title,
+                      source: 'library',
+                      bookId: book.id,
+                      category: book.category,
+                      reason: match.reason,
+                    })}
+                  />
                 </div>
               );
             })}
@@ -553,6 +625,15 @@ const AdvisorResult: React.FC<{
                 <Button size="sm" variant="outline" onClick={() => onAddBook(rec)} className="w-full">
                   <Plus size={14} /> 加入书库
                 </Button>
+                <FeedbackButtons
+                  chosen={feedback[`ext:${rec.title}`]}
+                  onPick={pickFeedback(`ext:${rec.title}`, {
+                    title: rec.title,
+                    source: 'external',
+                    category: rec.category,
+                    reason: rec.reason,
+                  })}
+                />
               </div>
               );
             })}

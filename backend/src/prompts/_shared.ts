@@ -27,7 +27,8 @@ const LIBRARY_TOOL_DESC = `你拥有一组工具来查询用户书库：
 - get_reading_taste_profile: 获取用户阅读品味画像（自动分析的阅读偏好、知识结构、阅读轨迹）
 - get_reading_gaps: 获取知识缺口分析（识别用户知识体系中的薄弱环节）
 - get_reading_notes: 获取用户在书籍上记录的阅读笔记和思考（深入了解用户的内心想法）
-- update_book_status: 更新书籍阅读状态和进度（写操作）`;
+- update_book_status: 更新书籍阅读状态和进度（写操作）
+- update_user_profile: 更新用户阅读画像（写操作，用于记住用户刚透露的水平/目标/偏好/时长）`;
 
 /** Web 搜索工具说明（仅在 EXA_API_KEY 配置后启用） */
 const WEB_TOOL_DESC = `
@@ -150,6 +151,7 @@ export const READING_ADVISOR_FEW_SHOT = `## 示例
   "libraryMatches": [
     {
       "bookId": "实际书库中的ID",
+      "title": "Rust 程序设计语言",
       "reason": "Rust 官方推荐入门书，涵盖所有权、生命周期等核心概念，适合有 C 语言基础的开发者",
       "timing": "你刚读完 CSAPP 的内存管理部分，正好可以对比 Rust 的所有权模型",
       "prerequisite": "C 语言基础（已满足）",

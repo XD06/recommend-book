@@ -73,9 +73,10 @@ export const DataManagement: React.FC<DataManagementProps> = ({
     if (!onSaveProfile) return;
     setSavingProfile(true);
     try {
-      // 展开保留 aiAnalysis 等本表单不编辑的字段
+      // 只发表单真正拥有的字段：PUT /api/profile 对 undefined 字段不写库，
+      // 所以不必展开 userProfile 去"保留 aiAnalysis"。展开了反而会把
+      // AI 通过 update_user_profile 刚写进去的字段按旧快照冲掉
       await onSaveProfile({
-        ...(userProfile ?? { readingLevel: level, preferredCategories: preferred }),
         readingLevel: level,
         readingGoal: goal.trim() || undefined,
         dailyReadingTime: minutes,

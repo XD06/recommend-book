@@ -22,10 +22,14 @@
  * - 新增 get_reading_gaps 工具 — 识别知识体系中的缺口
  * - 增强 buildLibraryOverview — 包含阅读品味画像和轨迹分析
  * - 增强工具描述，引导 AI 优先使用分析型工具
+ *
+ * v5：书库与画像改为按 userId 直读 SQLite（不再吃前端传来的快照），
+ * 工具缓存改为请求作用域，update_book_status 直接落库。
+ * v6：新增 update_user_profile 写工具 — 对话中问出来的偏好落回 user_profiles。
  */
 
-import { Book, BookStatus, BookLevel } from '../types';
-import { UserProfile } from '../types';
+import { Book, BookStatus, BookLevel, UserProfile, ReadingLevel, AgentContext } from '../types';
+import { updateBookProgressInDb, updateUserProfileInDb, loadUserLibrary, loadUserProfile, UserProfilePatch } from '../db/database';
 import { computeLibraryStats, formatCategoryDistribution } from './libraryStats';
 import {
   WEB_TOOLS,
@@ -33,54 +37,73 @@ import {
   isWebTool,
   describeWebToolCall,
   isWebSearchEnabled,
-  clearWebCache,
 } from './webSearchService';
 
 // ============================================================================
-// 工具结果缓存 — 同一轮对话中避免重复查询
+// 工具结果缓存 — 请求作用域，同一轮 Agent 循环内避免重复查询
 // ============================================================================
 
-/** LRU 缓存：缓存工具调用结果，key = toolName:JSON.stringify(args) */
-const toolResultCache = new Map<string, string>();
 const TOOL_CACHE_MAX = 50;
+
+/**
+ * 书库概览完整注入书目上限：≤ 本数时提示词里就有全部 [id] 书名，
+ * 模型不查工具也能给出真实 bookId；超过这个规模它看到的只是节选，
+ * 凭空给出的 ID 必然是猜的 — 推荐路径的书库硬闸门按这条线决定是否启用。
+ */
+export const FULL_INDEX_LIMIT = 100;
 
 /** 生成缓存 key */
 function getCacheKey(toolName: string, args: Record<string, any>): string {
   return `${toolName}:${JSON.stringify(args)}`;
 }
 
-/** 查询缓存 */
-export function getCachedToolResult(toolName: string, args: Record<string, any>): string | undefined {
+/** 查询缓存（命中则移到 LRU 末尾） */
+function getCachedToolResult(
+  ctx: AgentContext,
+  toolName: string,
+  args: Record<string, any>,
+): string | undefined {
   const key = getCacheKey(toolName, args);
-  const result = toolResultCache.get(key);
+  const result = ctx.toolCache.get(key);
   if (result !== undefined) {
-    // LRU: 移到末尾（最近使用）
-    toolResultCache.delete(key);
-    toolResultCache.set(key, result);
+    ctx.toolCache.delete(key);
+    ctx.toolCache.set(key, result);
   }
   return result;
 }
 
 /** 写入缓存 */
-export function setCachedToolResult(toolName: string, args: Record<string, any>, result: string): void {
+function setCachedToolResult(
+  ctx: AgentContext,
+  toolName: string,
+  args: Record<string, any>,
+  result: string,
+): void {
   const key = getCacheKey(toolName, args);
-  if (toolResultCache.size >= TOOL_CACHE_MAX) {
-    // 删除最老的条目
-    const firstKey = toolResultCache.keys().next().value;
-    if (firstKey) toolResultCache.delete(firstKey);
+  if (ctx.toolCache.size >= TOOL_CACHE_MAX) {
+    const firstKey = ctx.toolCache.keys().next().value;
+    if (firstKey) ctx.toolCache.delete(firstKey);
   }
-  toolResultCache.set(key, result);
-}
-
-/** 清空缓存（每次新请求时调用，同时清理 Web 缓存） */
-export function clearToolCache(): void {
-  toolResultCache.clear();
-  clearWebCache();
+  ctx.toolCache.set(key, result);
 }
 
 /** 判断是否为写工具（写工具不缓存） */
 function isWriteTool(toolName: string): boolean {
-  return toolName === 'update_book_status';
+  return toolName === 'update_book_status' || toolName === 'update_user_profile';
+}
+
+/**
+ * 画像类工具：它们证明模型看了"人"，但没看书目。
+ * 书库硬闸门不认它们，否则一次 get_user_profile 就能蒙过闸门。
+ */
+const PROFILE_TOOLS = new Set(['get_user_profile', 'update_user_profile']);
+
+/**
+ * 这次工具调用是否真的查过用户书目 — 供 Agent 循环统计"有没有查过书库"。
+ * Web 工具不在内：它查的是站外信息，填不了 libraryMatches 的 bookId。
+ */
+export function isLibraryCatalogTool(toolName: string): boolean {
+  return LIBRARY_TOOL_NAMES.has(toolName) && !PROFILE_TOOLS.has(toolName);
 }
 
 // ============================================================================
@@ -214,7 +237,26 @@ export const LIBRARY_TOOLS = [
       },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'update_user_profile',
+      description: '更新用户阅读画像（写操作）。当用户在对话中透露了稳定的阅读水平、阅读目标、偏好分类或每日阅读时间时使用，使下一次会话不必重新询问。只写用户明确说过的内容，不要根据推荐结果或猜测反推；只传需要修改的字段，未传的字段保持不变。',
+      parameters: {
+        type: 'object',
+        properties: {
+          readingLevel: { type: 'string', enum: ['beginner', 'intermediate', 'advanced', 'expert'], description: '自评阅读水平' },
+          readingGoal: { type: 'string', description: '阅读目标（如"打牢系统编程基础"）' },
+          preferredCategories: { type: 'array', items: { type: 'string' }, description: '偏好分类列表。覆盖式更新：传入即替换原有列表，必须先合并用户已有的偏好再提交' },
+          dailyReadingTime: { type: 'number', description: '每日可用阅读时间（分钟）' },
+        },
+      },
+    },
+  },
 ];
+
+/** 书库工具名集合 — 供"这次回答有没有查过书库"的判定使用 */
+const LIBRARY_TOOL_NAMES = new Set(LIBRARY_TOOLS.map((t) => t.function.name));
 
 // ============================================================================
 // 工具执行器
@@ -222,6 +264,21 @@ export const LIBRARY_TOOLS = [
 
 /** 书籍更新回调 — 用于通知前端 */
 export type BookUpdateCallback = (bookId: string, updates: Partial<Book>) => void;
+
+/**
+ * 装配一次 Agent 请求的上下文。由路由调用：客户端只交 userId（来自 JWT），
+ * 书库与画像一律服务端取，避免"前端快照即模型真相"。
+ */
+export function createAgentContext(userId: string): AgentContext {
+  return {
+    userId,
+    library: loadUserLibrary(userId),
+    userProfile: loadUserProfile(userId),
+    toolCache: new Map(),
+    webCalls: 0,
+    webCostUsd: 0,
+  };
+}
 
 // ============================================================================
 // 统一工具列表 — 条件性合并书库工具 + Web 工具
@@ -240,27 +297,27 @@ export function getAllTools(): any[] {
 
 /**
  * 统一工具执行器（异步）— 同时支持书库工具（同步）和 Web 工具（异步）
- * 
+ *
  * @param toolName 工具名称
  * @param args 工具参数
- * @param library 书库数据
- * @param userProfile 用户画像
- * @param onBookUpdate 书籍更新回调
+ * @param ctx 请求上下文（书库、画像来自 SQLite；缓存与 Web 计数随请求生死）
+ * @param onBookUpdate 书籍更新回调 — 仍要通知前端：`useBookLibrary` 是防抖**全量**
+ *                     覆盖保存，客户端不知道这次改动的话，下一次用户编辑任意一本
+ *                     书都会把刚写入的状态冲掉
  * @returns JSON 格式的工具结果字符串
  */
 export async function executeAllTools(
   toolName: string,
   args: Record<string, any>,
-  library: Book[],
-  userProfile?: UserProfile,
+  ctx: AgentContext,
   onBookUpdate?: BookUpdateCallback,
 ): Promise<string> {
   // Web 工具走异步路径
   if (isWebTool(toolName)) {
-    return executeWebTool(toolName, args);
+    return executeWebTool(toolName, args, ctx);
   }
   // 书库工具走同步路径
-  return executeLibraryTool(toolName, args, library, userProfile, onBookUpdate);
+  return executeLibraryTool(toolName, args, ctx, onBookUpdate);
 }
 
 /**
@@ -301,6 +358,8 @@ function describeToolCall(toolName: string, args: Record<string, any>): string {
       const statusMap: Record<string, string> = { reading: '开始阅读', finished: '读完', unread: '重置为未读' };
       return `更新书籍状态${args.status ? `（${statusMap[args.status] || args.status}）` : ''}`;
     }
+    case 'update_user_profile':
+      return '更新阅读画像';
     default:
       return toolName;
   }
@@ -319,14 +378,14 @@ export function describeToolCallUnified(toolName: string, args: Record<string, a
 export function executeLibraryTool(
   toolName: string,
   args: Record<string, any>,
-  library: Book[],
-  userProfile?: UserProfile,
+  ctx: AgentContext,
   onBookUpdate?: BookUpdateCallback,
 ): string {
+  const { library, userProfile } = ctx;
   try {
     // 写工具不缓存，直接执行
     if (!isWriteTool(toolName)) {
-      const cached = getCachedToolResult(toolName, args);
+      const cached = getCachedToolResult(ctx, toolName, args);
       if (cached !== undefined) {
         return cached;
       }
@@ -359,7 +418,10 @@ export function executeLibraryTool(
         result = JSON.stringify(getReadingNotes(args, library));
         break;
       case 'update_book_status':
-        result = JSON.stringify(updateBookStatus(args, library, onBookUpdate));
+        result = JSON.stringify(updateBookStatus(args, ctx, onBookUpdate));
+        break;
+      case 'update_user_profile':
+        result = JSON.stringify(updateUserProfile(args, ctx));
         break;
       default:
         result = JSON.stringify({ error: `未知工具: ${toolName}` });
@@ -367,7 +429,7 @@ export function executeLibraryTool(
 
     // 缓存读操作结果
     if (!isWriteTool(toolName)) {
-      setCachedToolResult(toolName, args, result);
+      setCachedToolResult(ctx, toolName, args, result);
     }
 
     return result;
@@ -989,14 +1051,15 @@ function getReadingNotes(args: Record<string, any>, library: Book[]): any {
 }
 
 // ============================================================================
-// 写工具实现 — update_book_status
+// 写工具实现 — update_book_status / update_user_profile
 // ============================================================================
 
 function updateBookStatus(
   args: Record<string, any>,
-  library: Book[],
+  ctx: AgentContext,
   onBookUpdate?: BookUpdateCallback,
 ): { success: boolean; message: string; book?: any } {
+  const { library } = ctx;
   const { bookId, status, currentPage, rating } = args;
   const book = library.find(b => b.id === bookId);
   if (!book) {
@@ -1053,15 +1116,106 @@ function updateBookStatus(
     updates.userData = book.userData;
   }
 
-  // 通知前端
+  const persisted = updateBookProgressInDb(ctx.userId, bookId, {
+    status: updates.status,
+    rating: updates.rating,
+    userData: updates.userData,
+  });
+
+  // 写入改变了后续查询的答案，本轮已缓存的读结果全部作废
+  ctx.toolCache.clear();
+
+  // 通知前端，防止它下一次全量保存时把刚写入的状态冲掉
   if (onBookUpdate) {
     onBookUpdate(bookId, updates);
+  }
+
+  if (!persisted) {
+    return {
+      success: false,
+      message: `《${book.title}》未能写入数据库（可能已被删除），状态改动不会保留`,
+    };
   }
 
   return {
     success: true,
     message: `已更新《${book.title}》的状态为: ${status}`,
     book: toBrief(book),
+  };
+}
+
+/**
+ * 把对话里问出来的稳定偏好落进 user_profiles。
+ *
+ * 没有这一步，Agent 花两轮问清的阅读水平/目标在下次会话里全部作废，
+ * "AI 主动询问 → 记住 → 下次不问"就退化成每次重新问。
+ * 字段校验在这里做而不是交给调用方：模型会给出 "中级" 这类中文值或超范围的分钟数。
+ */
+function updateUserProfile(args: Record<string, any>, ctx: AgentContext): any {
+  const patch: UserProfilePatch = {};
+  const invalid: string[] = [];
+  const changed: string[] = [];
+
+  const levels: ReadingLevel[] = ['beginner', 'intermediate', 'advanced', 'expert'];
+  if (args.readingLevel !== undefined) {
+    if (levels.includes(args.readingLevel)) {
+      patch.readingLevel = args.readingLevel;
+      changed.push('readingLevel');
+    } else {
+      invalid.push(`readingLevel="${args.readingLevel}" 不在 ${levels.join('/')} 之内`);
+    }
+  }
+
+  if (args.readingGoal !== undefined) {
+    const goal = String(args.readingGoal).trim();
+    if (goal) {
+      patch.readingGoal = goal.slice(0, 200);
+      changed.push('readingGoal');
+    }
+  }
+
+  if (args.preferredCategories !== undefined) {
+    if (Array.isArray(args.preferredCategories)) {
+      patch.preferredCategories = args.preferredCategories
+        .map((c: any) => String(c).trim())
+        .filter(Boolean)
+        .slice(0, 10);
+      changed.push('preferredCategories');
+    } else {
+      invalid.push('preferredCategories 必须是字符串数组');
+    }
+  }
+
+  if (args.dailyReadingTime !== undefined) {
+    const minutes = Number(args.dailyReadingTime);
+    if (Number.isFinite(minutes) && minutes > 0) {
+      patch.dailyReadingTime = Math.min(Math.round(minutes), 600);
+      changed.push('dailyReadingTime');
+    } else {
+      invalid.push(`dailyReadingTime="${args.dailyReadingTime}" 应为正整数分钟`);
+    }
+  }
+
+  if (changed.length === 0) {
+    return {
+      success: false,
+      message: '没有可更新的画像字段',
+      ...(invalid.length > 0 && { invalid }),
+    };
+  }
+
+  const profile = updateUserProfileInDb(ctx.userId, patch);
+  // 画像刚变，本轮已缓存的 get_user_profile / 品味分析结果就过期了；
+  // ctx.userProfile 同步刷新，本次回答的后续轮次能立刻看到新画像
+  ctx.userProfile = profile;
+  ctx.toolCache.clear();
+
+  return {
+    success: true,
+    message: `已记住用户画像更新：${changed.join('、')}`,
+    changed,
+    ...(invalid.length > 0 && { invalid }),
+    profile: getUserProfile(profile),
   };
 }
 
@@ -1122,7 +1276,7 @@ export function buildLibraryOverview(library: Book[]): string {
     return `[${b.id}] ${statusIcon} 《${b.title}》- ${b.author} [${b.category}/${b.subcategory}] (${b.level})`;
   };
 
-  const FULL_INDEX_LIMIT = 100;
+  /** 完整注入上限 — 见文件级 FULL_INDEX_LIMIT */
   const CURATED_INDEX_LIMIT = 300;
   const PER_CATEGORY_INDEX = 3;
 

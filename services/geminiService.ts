@@ -88,38 +88,36 @@ async function parseSSEStream(
     for (const line of lines) {
       if (line.startsWith('data: ')) {
         const jsonStr = line.slice(6);
+        let event: any;
         try {
-          const event = JSON.parse(jsonStr);
-          switch (event.type) {
-            case 'phase':
-              callbacks.onPhase?.(event.phase);
-              break;
-            case 'tool_call':
-              callbacks.onToolCall?.(event.tool, event.label, event.round);
-              break;
-            case 'chunk':
-              callbacks.onChunk?.(event.content);
-              break;
-            case 'reasoning':
-              callbacks.onReasoning?.(event.content);
-              break;
-            case 'book_update':
-              callbacks.onBookUpdate?.(event.bookId, event.updates);
-              break;
-            case 'done':
-              result = event.data;
-              callbacks.onDone?.(event.data);
-              break;
-            case 'error':
-              callbacks.onError?.(event.message);
-              throw new Error(event.message);
-          }
-        } catch (e: any) {
-          // 如果是我们自己 throw 的错误，继续传播
-          if (e.message && !e.message.includes('JSON')) {
-            throw e;
-          }
-          // 忽略 JSON 解析错误
+          event = JSON.parse(jsonStr);
+        } catch {
+          // 只吞帧解析失败；回调与后端 error 事件抛出的错误必须传播出去
+          continue;
+        }
+        switch (event.type) {
+          case 'phase':
+            callbacks.onPhase?.(event.phase);
+            break;
+          case 'tool_call':
+            callbacks.onToolCall?.(event.tool, event.label, event.round);
+            break;
+          case 'chunk':
+            callbacks.onChunk?.(event.content);
+            break;
+          case 'reasoning':
+            callbacks.onReasoning?.(event.content);
+            break;
+          case 'book_update':
+            callbacks.onBookUpdate?.(event.bookId, event.updates);
+            break;
+          case 'done':
+            result = event.data;
+            callbacks.onDone?.(event.data);
+            break;
+          case 'error':
+            callbacks.onError?.(event.message);
+            throw new Error(event.message);
         }
       }
     }
@@ -161,13 +159,14 @@ async function fetchSSEStream(
 
 /**
  * 流式个性化推荐
+ *
+ * 书库与画像不在参数里：流式端点跑 Agent 工具循环、可读写书库，
+ * 后端一律从 SQLite 载入，客户端传了也不作数。
  */
 export async function getRecommendationsStream(
   context: {
     userRequest: string;
     userMood?: string;
-    userProfile?: any;
-    library: Book[];
     categoryContext?: any;
     conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
   },
@@ -175,6 +174,40 @@ export async function getRecommendationsStream(
   signal?: AbortSignal,
 ): Promise<any> {
   return fetchSSEStream('recommend/stream', context, callbacks, signal);
+}
+
+// ============================================================================
+// 推荐采纳反馈 — 卡片上的「想读 / 跳过」
+// ============================================================================
+
+export interface RecommendationFeedbackItem {
+  bookId?: string;
+  title: string;
+  source: 'library' | 'external';
+  action: 'want' | 'skip';
+  category?: string;
+  reason?: string;
+}
+
+/**
+ * 上报用户对某条推荐的显式态度。
+ * 返回 false 而不是抛错：这是评估数据，不该因为一次上报失败就弹错误框，
+ * 调用方拿返回值把按钮状态回滚即可。
+ */
+export async function sendRecommendationFeedback(
+  items: RecommendationFeedbackItem[],
+  requestId?: string,
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_BASE}/ai/recommend-feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ requestId, items }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -189,7 +222,6 @@ export async function generateInsightStream(
     subcategory?: string;
     totalPages?: number;
     doubanData?: any;
-    library?: Book[];
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -230,7 +262,6 @@ export async function chatWithBookStream(
       readingProgress?: { currentPage: number; totalPages: number; percentage: number };
     };
     conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
-    library?: Book[];
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -253,7 +284,6 @@ export async function generateReadingInsightsStream(
     levelDistribution: { Basic: number; Advanced: number; Expert: number };
     readingBooks: Array<{ title: string; author: string; progress: number; category: string }>;
     finishedBooks: Array<{ title: string; author: string; category: string }>;
-    library: Book[];
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -280,7 +310,6 @@ export async function analyzeUserProfileStream(
       readingGoal?: string;
       preferredCategories: string[];
     };
-    library: Book[];
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -294,7 +323,6 @@ export async function analyzeUserProfileStream(
 export async function compareBooksStream(
   data: {
     books: any[];
-    library: Book[];
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -317,8 +345,6 @@ export async function generateReadingSummaryStream(
     aiInsight?: { summary?: string; advice?: string; keyChapters?: string[] };
     doubanData?: { rating_score?: number; summary?: string; tags?: string[] };
     readingProgress?: { startDate?: string; completionDate?: string; totalPages?: number };
-    userProfile?: { readingLevel?: string; readingGoal?: string; preferredCategories?: string[] };
-    library: Book[];
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -334,7 +360,6 @@ export async function organizeNotesStream(
     bookTitle: string;
     bookAuthor?: string;
     notes: Array<{ id: number; content: string; type?: string }>;
-    library?: Book[];
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
@@ -345,14 +370,12 @@ export async function organizeNotesStream(
 /**
  * 全局阅读助手（流式）
  *
- * 跨书库自由对话，不绑定单本书
+ * 跨书库自由对话，不绑定单本书。书库与画像由后端从 SQLite 载入
  */
 export async function readingAssistantStream(
   data: {
     question: string;
-    library: Book[];
     conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
-    userProfile?: any;
   },
   callbacks: StreamCallbacks,
   signal?: AbortSignal,

@@ -17,7 +17,6 @@ import {
 
 interface BookQAProps {
   book: Book;
-  library?: Book[];
 }
 
 // 快捷问题建议
@@ -28,7 +27,7 @@ const QUICK_QUESTIONS = [
   '和同类书相比有什么特点？',
 ];
 
-export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
+export const BookQA: React.FC<BookQAProps> = ({ book }) => {
   const storageKey = `bookqa-${book.id}`;
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -127,7 +126,6 @@ export const BookQA: React.FC<BookQAProps> = ({ book, library }) => {
           question,
           bookContext: buildBookContext(),
           conversationHistory: messages, // 之前的对话历史
-          library,
         },
         {
           onChunk: (chunk) => typewriter.append(chunk),

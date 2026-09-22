@@ -22,6 +22,8 @@ import {
   AIRequestContext,
   ReadingPathResponse,
   UserProfile,
+  AgentContext,
+  CategoryContext,
 } from '../types';
 import {
   BOOK_CLASSIFIER_SYSTEM_PROMPT,
@@ -48,10 +50,13 @@ import {
   getAllTools,
   executeAllTools,
   buildLibraryOverview,
-  clearToolCache,
   describeToolCallUnified,
+  isLibraryCatalogTool,
+  FULL_INDEX_LIMIT,
   BookUpdateCallback,
 } from './libraryTools';
+import { logWebUsage } from './webSearchService';
+import { validateAdvisorJson, claimsLibraryMatches } from './recommendValidation';
 
 // 获取当前使用的模型
 const getModel = () => process.env.LITELLM_MODEL || 'deepseek-chat';
@@ -537,6 +542,42 @@ function trimConversationHistory(history: Array<{ role: 'user' | 'assistant'; co
 // Agent 模式 — 工具调用循环 + 流式最终输出
 // ============================================================================
 
+/** SSE 侧回调与取消信号。收成一对象，调用点才不会变成位置参数阵列 */
+export interface AgentHandlers {
+  onChunk: (chunk: string) => void;
+  onPhase?: (phase: 'thinking' | 'generating') => void;
+  onToolCall?: (toolName: string, label: string, round: number) => void;
+  onReasoning?: (text: string) => void;
+  onBookUpdate?: BookUpdateCallback;
+  signal?: AbortSignal;
+}
+
+/** 一次 callAgentStream 调用的全部输入 */
+export interface AgentRun {
+  systemPrompt: string;
+  userPrompt: string;
+  /** 请求上下文：书库与画像已由路由从 SQLite 载入 */
+  ctx: AgentContext;
+  handlers: AgentHandlers;
+  temperature?: number;
+  jsonMode?: boolean;
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  /**
+   * 书库硬闸门：模型声称给出了书库匹配（libraryMatches 非空）却一次书库查询都没做时，
+   * 追加一轮纠正消息逼它先查再答。多一轮 = 多一次 AI 调用，所以由调用方按
+   * "概览里的书目是否已经完整"决定开不开。
+   */
+  requireLibraryTool?: boolean;
+}
+
+/** 非流式与流式推荐共用的请求体（不含书库/画像——那两项服务端取） */
+export interface RecommendInput {
+  userRequest: string;
+  userMood?: string | null;
+  categoryContext?: CategoryContext;
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+}
+
 /**
  * 非流式 AI 调用（支持 tools）— 收集完整响应含 tool_calls
  * 内置重试 + 模型降级
@@ -602,32 +643,30 @@ async function streamText(
 }
 
 /**
+ * 书库硬闸门注入的纠正消息（见 callAgentStream 内的触发条件）
+ */
+const LIBRARY_GATE_HINT = `【系统校验】你上一条回答的 libraryMatches 引用了用户书架上的书，但你这一轮没有调用任何书库查询工具，这些 bookId 无从核对。
+请先调用 search_library / get_book_details 查用户真实藏书——常驻的书库概览只是紧凑索引，单本的状态、分类、进度和解读都可能不全——再基于查询结果重新输出完整答案。
+如果查完发现书库里确实没有匹配的书，就把 libraryMatches 留空、改用 externalMatches，并如实说明书库里没有。`;
+
+/**
  * Agent 流式调用 — 两阶段架构
  *
- * Phase 1（信息收集）：AI 通过 tool calls 搜索书库，非流式，最多 N 轮
+ * Phase 1（信息收集）：AI 通过 tool calls 查询书库，非流式，最多 N 轮
  * Phase 2（最终输出）：基于收集的信息流式生成最终回复
  *
- * 关键：使用 getAllTools() 而非硬编码 LIBRARY_TOOLS，
- * 使用 executeAllTools() 而非 executeLibraryTool()，
- * 确保所有注册工具（书库 + Web 搜索）都能被 Agent 使用。
+ * 入参收成一个对象：这里曾经排过 13 个位置参数，`onBookUpdate` 是第 12 个，
+ * 漏传时不报错、只是"模型说改了但没改"。
+ *
+ * 循环本身不认识任何具体工具：用 getAllTools() / executeAllTools()，
+ * 新增能力只需在 libraryTools.ts 加工具定义。
  */
-async function callAgentStream(
-  systemPrompt: string,
-  userPrompt: string,
-  library: Book[],
-  onChunk: (chunk: string) => void,
-  temperature: number = 0.7,
-  jsonMode: boolean = false,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>,
-  userProfile?: UserProfile,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onBookUpdate?: BookUpdateCallback,
-  onReasoning?: (text: string) => void,
-): Promise<string> {
-  // 清空工具缓存（新请求开始）
-  clearToolCache();
+async function callAgentStream(run: AgentRun): Promise<string> {
+  const { systemPrompt, userPrompt, ctx, handlers } = run;
+  const { onChunk, onPhase, onToolCall, onReasoning, onBookUpdate, signal } = handlers;
+  const temperature = run.temperature ?? 0.7;
+  const jsonMode = run.jsonMode ?? false;
+  const conversationHistory = run.conversationHistory;
 
   const messages: any[] = [
     { role: 'system', content: systemPrompt },
@@ -647,10 +686,14 @@ async function callAgentStream(
   onPhase?.('thinking');
 
   const MAX_ROUNDS = 3;
+  let maxRounds = MAX_ROUNDS;
   // 运行时获取所有可用工具（书库工具 + 条件性 Web 工具）
   const tools = getAllTools();
+  // 书库硬闸门：本轮真正查过几次书目（画像类工具不计，它给不出 bookId）
+  let catalogQueries = 0;
+  let gateFired = false;
 
-  for (let round = 0; round < MAX_ROUNDS; round++) {
+  for (let round = 0; round < maxRounds; round++) {
     const roundStart = Date.now();
     let response: { content: string | null; tool_calls?: any[] };
     try {
@@ -661,7 +704,7 @@ async function callAgentStream(
       if (round === 0) throw e;
       break;
     }
-    console.log(`[AI] Agent round ${round + 1}/${MAX_ROUNDS} 完成 (${Date.now() - roundStart}ms, tools: ${response.tool_calls?.length || 0})`);
+    console.log(`[AI] Agent round ${round + 1}/${maxRounds} 完成 (${Date.now() - roundStart}ms, tools: ${response.tool_calls?.length || 0})`);
 
     if (response.tool_calls && response.tool_calls.length > 0) {
       // Phase 1 透明化：如果 AI 返回了思考文本（content），推送给前端
@@ -692,6 +735,8 @@ async function callAgentStream(
         return { tc, args };
       });
 
+      catalogQueries += toolEntries.filter((e) => isLibraryCatalogTool(e.tc.function.name)).length;
+
       // 并行执行所有工具，保证结果顺序与 tool_calls 一致
       const results = await Promise.all(
         toolEntries.map(async ({ tc, args }) => {
@@ -699,7 +744,7 @@ async function callAgentStream(
           console.log(`[AI] 执行工具: ${tc.function.name} (args=${JSON.stringify(args).slice(0, 80)})`);
           try {
             // 使用统一执行器（自动路由书库工具 / Web 工具）
-            const result = await executeAllTools(tc.function.name, args, library, userProfile, onBookUpdate);
+            const result = await executeAllTools(tc.function.name, args, ctx, onBookUpdate);
             console.log(`[AI] 工具完成: ${tc.function.name} (${Date.now() - toolStart}ms)`);
             return result;
           } catch (toolErr: any) {
@@ -718,6 +763,21 @@ async function callAgentStream(
         });
       }
       // 继续下一轮，让 AI 处理工具结果
+    } else if (
+      run.requireLibraryTool &&
+      !gateFired &&
+      catalogQueries === 0 &&
+      claimsLibraryMatches(response.content ?? '')
+    ) {
+      // 声称推了用户书架上的书，却一次书目查询都没做——这些 bookId 全是脑补的。
+      // "推荐前必须先查书库"写在 370 行提示词里会被稀释，这里改成结构上的强制：
+      // 不查就不给这一轮重来一次的机会。只补 1 轮，不无限追问。
+      gateFired = true;
+      maxRounds = round + 2;
+      console.log('[AI] 书库硬闸门: 未查询书目就给出 libraryMatches，追加 1 轮强制查证');
+      messages.push({ role: 'assistant', content: response.content || '' });
+      messages.push({ role: 'user', content: LIBRARY_GATE_HINT });
+      continue;
     } else {
       // AI 不再调用工具 — 信息收集阶段结束
       lastContent = response.content;
@@ -728,6 +788,8 @@ async function callAgentStream(
   // Phase 2: 流式生成最终回复
   console.log('[AI] Agent Phase 2: 生成最终回复 (generating)');
   onPhase?.('generating');
+  // Phase 1 是唯一会打 Web 工具的阶段，此处即本次请求的用量终值
+  logWebUsage(ctx);
 
   // 如果 Phase 1 的最后一轮已经生成了完整内容，直接输出（跳过 Phase 2 冗余调用）
   if (lastContent && lastContent.trim().length > 0) {
@@ -1272,39 +1334,39 @@ export async function reorganizeLibrary(
  * 3. 构建丰富的用户上下文（书库概览 + 品味画像 + 用户画像 + 对话历史）
  * 4. 引导 AI 优先使用分析型工具（品味画像、知识缺口）
  */
+/** 画像段落：推荐与阅读助手共用同一份措辞，避免两处各自漂移 */
+function buildProfileBlock(profile?: UserProfile): string {
+  if (!profile) return '';
+  let block = `\n\n【用户画像】\n`;
+  block += `水平: ${profile.readingLevel}\n`;
+  if (profile.readingGoal) block += `目标: ${profile.readingGoal}\n`;
+  if (profile.preferredCategories?.length) block += `偏好: ${profile.preferredCategories.join(', ')}\n`;
+  if (profile.dailyReadingTime) block += `每日阅读时间: ${profile.dailyReadingTime} 分钟\n`;
+  if (profile.aiAnalysis) {
+    block += `AI分析: ${profile.aiAnalysis.readingPattern}\n`;
+    block += `盲区: ${profile.aiAnalysis.blindSpots.join(', ')}\n`;
+    block += `建议方向: ${profile.aiAnalysis.recommendedFocus}\n`;
+  }
+  return block;
+}
+
 export async function getRecommendationsStream(
-  context: AIRequestContext,
-  onChunk: (chunk: string) => void,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
-  onBookUpdate?: BookUpdateCallback,
+  ctx: AgentContext,
+  input: RecommendInput,
+  handlers: AgentHandlers,
 ): Promise<AIResponse> {
   // 使用 withTools 统一构建工具说明（包含新增的分析型工具）
-const systemPrompt = withTools(
-READING_ADVISOR_SYSTEM_PROMPT,
-3,
-`书库概览和阅读品味画像已在上下文中提供。如需更详细的信息，可使用工具查询（最多3轮），但不要为了使用工具而使用工具——如果已有信息足够回答，直接回答即可（寒暄或笼统请求按对话模式简短回应，不要输出书单）。`,
-);
+  const systemPrompt = withTools(
+    READING_ADVISOR_SYSTEM_PROMPT,
+    3,
+    `书库概览和阅读品味画像已在上下文中提供。如需更详细的信息，可使用工具查询（最多3轮），但不要为了使用工具而使用工具——如果已有信息足够回答，直接回答即可（寒暄或笼统请求按对话模式简短回应，不要输出书单）。`,
+  );
 
-  let userPrompt = buildLibraryOverview(context.library);
+  let userPrompt = buildLibraryOverview(ctx.library);
+  userPrompt += buildProfileBlock(ctx.userProfile);
 
-  if (context.userProfile) {
-    userPrompt += `\n\n【用户画像】\n`;
-    userPrompt += `水平: ${context.userProfile.readingLevel}\n`;
-    if (context.userProfile.readingGoal) userPrompt += `目标: ${context.userProfile.readingGoal}\n`;
-    if (context.userProfile.preferredCategories?.length) userPrompt += `偏好: ${context.userProfile.preferredCategories.join(', ')}\n`;
-    if (context.userProfile.dailyReadingTime) userPrompt += `每日阅读时间: ${context.userProfile.dailyReadingTime} 分钟\n`;
-    if (context.userProfile.aiAnalysis) {
-      userPrompt += `AI分析: ${context.userProfile.aiAnalysis.readingPattern}\n`;
-      userPrompt += `盲区: ${context.userProfile.aiAnalysis.blindSpots.join(', ')}\n`;
-      userPrompt += `建议方向: ${context.userProfile.aiAnalysis.recommendedFocus}\n`;
-    }
-  }
-
-  if (context.categoryContext) {
-    const cc = context.categoryContext;
+  if (input.categoryContext) {
+    const cc = input.categoryContext;
     userPrompt += `\n\n【分类上下文】\n`;
     userPrompt += `当前分类: ${cc.currentCategory}\n`;
     userPrompt += `分类统计: 共 ${cc.totalBooks} 本（在读 ${cc.readingStats.reading}, 已读 ${cc.readingStats.finished}, 未读 ${cc.readingStats.unread}）\n`;
@@ -1314,47 +1376,61 @@ READING_ADVISOR_SYSTEM_PROMPT,
     userPrompt += `提示：请优先在该分类范围内推荐，但如发现知识缺口可适当推荐跨分类书籍。\n`;
   }
 
-  // 对话历史（多轮推荐上下文）— 保留最近 6 轮，每条最多 300 字
-  if (context.conversationHistory && context.conversationHistory.length > 0) {
-    userPrompt += `\n【对话历史】\n`;
-    for (const msg of context.conversationHistory.slice(-6)) {
-      userPrompt += `${msg.role === 'user' ? '用户' : '助手'}：${msg.content.slice(0, 300)}\n`;
-    }
-  }
+  // 对话历史不在此处内联：callAgentStream 会把 conversationHistory 作为结构化
+  // messages 注入（并过 trimConversationHistory 的 token 窗口），再拼一份就是发两遍。
 
-  userPrompt += `\n【用户请求】\n${context.userRequest}`;
-  if (context.userMood) userPrompt += `\n当前心情: ${context.userMood}`;
+  userPrompt += `\n【用户请求】\n${input.userRequest}`;
+  if (input.userMood) userPrompt += `\n当前心情: ${input.userMood}`;
 
   // 系统提示有 370+ 行且几乎全在讲怎么推荐，模式判定写在中间会被带偏：
   // 一句"你好"也会直接产出整份书单。把模式闸门压到最后一条，利用尾部位置。
   userPrompt += `\n\n第一步只做模式判断（见系统提示"响应模式判断"）：寒暄、闲聊、问你是谁、需求太笼统 → mode="conversation"，reply 控制在 150 字内、不给书单、不必调用工具；只有出现明确学习目标或具体阅读需求时才用 recommendation。`;
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, context.library, onChunk, 0.7, true,
-    onPhase, context.conversationHistory?.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    context.userProfile, onToolCall, signal, onBookUpdate, onReasoning
-  );
-  return parseAIJSON<AIResponse>(content);
+  const content = await callAgentStream({
+    systemPrompt,
+    userPrompt,
+    ctx,
+    handlers,
+    temperature: 0.7,
+    jsonMode: true,
+    conversationHistory: input.conversationHistory,
+    // 闸门只在概览不完整时启用：≤FULL_INDEX_LIMIT 本的提示词里就是全量 [id] 书名，
+    // 不查工具也算有据可依；超过这个规模概览只是节选，此时凭空报出的 bookId 必然是猜的
+    requireLibraryTool: ctx.library.length > FULL_INDEX_LIMIT,
+  });
+
+  // chunk 只是原文预览，客户端真正渲染的是 done 里这份返回值，所以清洗放在这里有效：
+  // 编造的 bookId 不再变成"界面上凭空少一本"。
+  const { json: checked, validation } = validateAdvisorJson(content, ctx.library);
+  const result = parseAIJSON<AIResponse>(checked);
+  if (validation && result) result.matchValidation = validation;
+  return result;
 }
 
 /**
  * 流式生成书籍解读 — Agent 模式
  */
-export async function generateInsightStream(
-  title: string, author: string, level: BookLevel,
-  category?: string, subcategory?: string, totalPages?: number,
+export interface InsightInput {
+  title: string;
+  author: string;
+  level: BookLevel;
+  category?: string;
+  subcategory?: string;
+  totalPages?: number;
   doubanData?: {
     rating?: number; ratingCount?: number; summary?: string;
     tags?: string[]; publisher?: string; pubdate?: string;
-  },
-  onChunk?: (chunk: string) => void,
-  library?: Book[],
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
+  };
+}
+
+export async function generateInsightStream(
+  ctx: AgentContext,
+  input: InsightInput,
+  handlers: AgentHandlers,
 ): Promise<AIInsight> {
-  if (library && library.length > 0) {
+  const library = ctx.library;
+  const { title, author, level, category, subcategory, totalPages, doubanData } = input;
+  if (library.length > 0) {
 const systemPrompt = withTools(
 INSIGHT_GENERATOR_SYSTEM_PROMPT,
 2,
@@ -1384,10 +1460,10 @@ INSIGHT_GENERATOR_SYSTEM_PROMPT,
     userPrompt += `\n${buildLibraryOverview(library)}`;
     userPrompt += `\n请结合书库信息生成解读，在建议中可以提及用户书库中的相关书籍，建立知识连接。`;
 
-    const content = await callAgentStream(
-      systemPrompt, userPrompt, library, onChunk || (() => {}), 0.4, true,
-      onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
-    );
+    const content = await callAgentStream({
+      systemPrompt, userPrompt, ctx, handlers,
+      temperature: 0.4, jsonMode: true,
+    });
     return parseAIJSON<AIInsight>(content);
   }
 
@@ -1395,20 +1471,27 @@ INSIGHT_GENERATOR_SYSTEM_PROMPT,
   const content = await callAIStream([
     { role: 'system', content: INSIGHT_GENERATOR_SYSTEM_PROMPT },
     { role: 'user', content: buildInsightGeneratorUserPrompt({ title, author, level, category, subcategory, totalPages, doubanData }) }
-  ], onChunk || (() => {}), 0.4, signal);
+  ], handlers.onChunk, 0.4, handlers.signal);
   return parseAIJSON<AIInsight>(content);
 }
 
 /**
  * 流式规划阅读路径 — Agent 模式
+ *
+ * `input.books` 是用户在界面上勾选的那批书（请求数据，不是书库真源）；
+ * 工具查询走 ctx.library，因此模型还能顺带引用勾选范围之外的藏书。
  */
+export interface ReadingPathInput {
+  books: Book[];
+  category: string;
+  subcategory?: string;
+  customRequirements?: string;
+}
+
 export async function generateReadingPathStream(
-  books: Book[], category: string, subcategory?: string, customRequirements?: string,
-  onChunk?: (chunk: string) => void,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
+  ctx: AgentContext,
+  input: ReadingPathInput,
+  handlers: AgentHandlers,
 ): Promise<ReadingPathResponse> {
 const systemPrompt = withTools(
 READING_PATH_SYSTEM_PROMPT,
@@ -1417,40 +1500,41 @@ READING_PATH_SYSTEM_PROMPT,
 );
 
   let userPrompt = `请为以下书籍规划阅读路径。\n\n`;
-  userPrompt += `领域: ${category}${subcategory ? ` > ${subcategory}` : ''}\n`;
-  if (customRequirements) userPrompt += `用户目标: ${customRequirements}\n`;
-  userPrompt += `\n${buildLibraryOverview(books)}`;
+  userPrompt += `领域: ${input.category}${input.subcategory ? ` > ${input.subcategory}` : ''}\n`;
+  if (input.customRequirements) userPrompt += `用户目标: ${input.customRequirements}\n`;
+  userPrompt += `\n${buildLibraryOverview(input.books)}`;
   userPrompt += `\n请使用 get_book_details 工具获取这些书籍的详细信息，然后规划路径。`;
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, books, onChunk || (() => {}), 0.3, true,
-    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
-  );
+  const content = await callAgentStream({
+    systemPrompt, userPrompt, ctx, handlers,
+    temperature: 0.3, jsonMode: true,
+  });
   return parseAIJSON<ReadingPathResponse>(content);
 }
 
 /**
  * 书籍问答 — 流式对话（Agent 模式）
  */
-export async function chatWithBookStream(
-  question: string,
+export interface BookQAInput {
+  question: string;
   bookContext: {
     title: string; author: string;
     category?: string; subcategory?: string; level?: string;
     aiInsight?: { summary?: string; advice?: string; keyChapters?: string[] };
     doubanData?: { summary?: string; rating_score?: number; tags?: string[] };
     readingProgress?: { currentPage: number; totalPages: number; percentage: number };
-  },
-  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
-  onChunk: (chunk: string) => void,
-  signal?: AbortSignal,
-  library?: Book[],
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  onBookUpdate?: BookUpdateCallback,
-  onReasoning?: (text: string) => void,
+  };
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+}
+
+export async function chatWithBookStream(
+  ctx: AgentContext,
+  input: BookQAInput,
+  handlers: AgentHandlers,
 ): Promise<string> {
-  if (library && library.length > 0) {
+  const { question, bookContext, conversationHistory = [] } = input;
+  const library = ctx.library;
+  if (library.length > 0) {
     const messages = buildBookQAContext(
       bookContext.title, bookContext.author, bookContext.category, bookContext.subcategory,
       bookContext.level, bookContext.aiInsight, bookContext.doubanData, bookContext.readingProgress,
@@ -1465,7 +1549,7 @@ export async function chatWithBookStream(
     );
 
     let userPrompt = '';
-    if (conversationHistory && conversationHistory.length > 0) {
+    if (conversationHistory.length > 0) {
       userPrompt += `【对话历史】\n`;
       for (const msg of conversationHistory.slice(-6)) {
         userPrompt += `${msg.role === 'user' ? '用户' : '助手'}：${msg.content.slice(0, 200)}\n`;
@@ -1475,10 +1559,10 @@ export async function chatWithBookStream(
     userPrompt += `【当前问题】\n${question}\n`;
     userPrompt += `\n${buildLibraryOverview(library)}`;
 
-    const content = await callAgentStream(
-      systemPrompt, userPrompt, library, onChunk, 0.7, false,
-      onPhase, undefined, undefined, onToolCall, signal, onBookUpdate, onReasoning
-    );
+    const content = await callAgentStream({
+      systemPrompt, userPrompt, ctx, handlers,
+      temperature: 0.7, jsonMode: false,
+    });
     return content;
   }
 
@@ -1489,13 +1573,14 @@ export async function chatWithBookStream(
     conversationHistory
   );
   messages.push({ role: 'user', content: question });
-  return callAIStream(messages, onChunk, 0.7, signal);
+  return callAIStream(messages, handlers.onChunk, 0.7, handlers.signal);
 }
 
 /**
  * 阅读洞察 — 流式 Agent
  */
 export async function generateReadingInsightsStream(
+  ctx: AgentContext,
   data: {
     totalBooks: number; readingCount: number; finishedCount: number; unreadCount: number;
     totalPagesRead: number; avgRating: number;
@@ -1504,12 +1589,7 @@ export async function generateReadingInsightsStream(
     readingBooks: Array<{ title: string; author: string; progress: number; category: string }>;
     finishedBooks: Array<{ title: string; author: string; category: string }>;
   },
-  library: Book[],
-  onChunk: (chunk: string) => void,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
+  handlers: AgentHandlers,
 ): Promise<any> {
 const systemPrompt = withTools(
 READING_INSIGHTS_SYSTEM_PROMPT,
@@ -1531,10 +1611,10 @@ READING_INSIGHTS_SYSTEM_PROMPT,
   }
   userPrompt += `\n提示：使用工具可以查看已读书籍历史、获取书籍详情、查看分类统计。`;
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, library, onChunk, 0.6, true,
-    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
-  );
+  const content = await callAgentStream({
+    systemPrompt, userPrompt, ctx, handlers,
+    temperature: 0.6, jsonMode: true,
+  });
   return parseAIJSON(content);
 }
 
@@ -1542,6 +1622,7 @@ READING_INSIGHTS_SYSTEM_PROMPT,
  * 用户画像分析 — 流式 Agent
  */
 export async function analyzeUserProfileStream(
+  ctx: AgentContext,
   data: {
     totalBooks: number; readingCount: number; finishedCount: number; unreadCount: number;
     totalPagesRead: number;
@@ -1555,12 +1636,7 @@ export async function analyzeUserProfileStream(
       preferredCategories: string[];
     };
   },
-  library: Book[],
-  onChunk: (chunk: string) => void,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
+  handlers: AgentHandlers,
 ): Promise<any> {
 const systemPrompt = withTools(
 PROFILE_ANALYSIS_SYSTEM_PROMPT,
@@ -1589,10 +1665,10 @@ PROFILE_ANALYSIS_SYSTEM_PROMPT,
   }
   userPrompt += `\n提示：使用工具可以查看已读书籍历史、获取书籍详情、查看分类统计。`;
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, library, onChunk, 0.5, true,
-    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
-  );
+  const content = await callAgentStream({
+    systemPrompt, userPrompt, ctx, handlers,
+    temperature: 0.5, jsonMode: true,
+  });
   return parseAIJSON(content);
 }
 
@@ -1600,13 +1676,9 @@ PROFILE_ANALYSIS_SYSTEM_PROMPT,
  * 书籍对比 — 流式 Agent
  */
 export async function compareBooksStream(
+  ctx: AgentContext,
   books: any[],
-  library: Book[],
-  onChunk: (chunk: string) => void,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
+  handlers: AgentHandlers,
 ): Promise<any> {
 const systemPrompt = withTools(
 BOOK_COMPARISON_SYSTEM_PROMPT,
@@ -1615,12 +1687,12 @@ BOOK_COMPARISON_SYSTEM_PROMPT,
 );
 
   let userPrompt = buildBookComparisonUserPrompt(books);
-  userPrompt += `\n${buildLibraryOverview(library)}`;
+  userPrompt += `\n${buildLibraryOverview(ctx.library)}`;
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, library, onChunk, 0.4, true,
-    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
-  );
+  const content = await callAgentStream({
+    systemPrompt, userPrompt, ctx, handlers,
+    temperature: 0.4, jsonMode: true,
+  });
   return parseAIJSON(content);
 }
 
@@ -1628,6 +1700,7 @@ BOOK_COMPARISON_SYSTEM_PROMPT,
  * 读书总结 — 流式 Agent
  */
 export async function generateReadingSummaryStream(
+  ctx: AgentContext,
   data: {
     title: string; author: string;
     category?: string; subcategory?: string; level?: string;
@@ -1635,14 +1708,8 @@ export async function generateReadingSummaryStream(
     aiInsight?: { summary?: string; advice?: string; keyChapters?: string[] };
     doubanData?: { rating_score?: number; summary?: string; tags?: string[] };
     readingProgress?: { startDate?: string; completionDate?: string; totalPages?: number };
-    userProfile?: { readingLevel?: string; readingGoal?: string; preferredCategories?: string[] };
   },
-  library: Book[],
-  onChunk: (chunk: string) => void,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
+  handlers: AgentHandlers,
 ): Promise<any> {
 const systemPrompt = withTools(
 READING_SUMMARY_SYSTEM_PROMPT,
@@ -1650,6 +1717,7 @@ READING_SUMMARY_SYSTEM_PROMPT,
 `如需查找相关书籍可使用工具，但已有信息足够时直接生成总结。`,
 );
 
+  const library = ctx.library;
   const relatedBooks = library
     .filter(b => b.id !== data.title &&
       (b.category === data.category ||
@@ -1658,13 +1726,24 @@ READING_SUMMARY_SYSTEM_PROMPT,
     .slice(0, 5)
     .map(b => ({ title: b.title, author: b.author, category: b.category }));
 
-  let userPrompt = buildReadingSummaryUserPrompt({ ...data, relatedBooks });
+  const profile = ctx.userProfile;
+  let userPrompt = buildReadingSummaryUserPrompt({
+    ...data,
+    relatedBooks,
+    userProfile: profile
+      ? {
+          readingLevel: profile.readingLevel,
+          readingGoal: profile.readingGoal,
+          preferredCategories: profile.preferredCategories,
+        }
+      : undefined,
+  });
   userPrompt += `\n${buildLibraryOverview(library)}`;
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, library, onChunk, 0.5, true,
-    onPhase, undefined, data.userProfile as any, onToolCall, signal, undefined, onReasoning
-  );
+  const content = await callAgentStream({
+    systemPrompt, userPrompt, ctx, handlers,
+    temperature: 0.5, jsonMode: true,
+  });
   return parseAIJSON(content);
 }
 
@@ -1691,17 +1770,13 @@ export interface NoteOrganizerResult {
  * 流式笔记整理 — Agent 模式
  */
 export async function organizeNotesStream(
+  ctx: AgentContext,
   data: {
     bookTitle: string;
     bookAuthor?: string;
     notes: Array<{ id: number; content: string; type?: string }>;
   },
-  library: Book[],
-  onChunk: (chunk: string) => void,
-  onPhase?: (phase: 'thinking' | 'generating') => void,
-  onToolCall?: (toolName: string, label: string, round: number) => void,
-  signal?: AbortSignal,
-  onReasoning?: (text: string) => void,
+  handlers: AgentHandlers,
 ): Promise<NoteOrganizerResult> {
   const systemPrompt = withTools(
     NOTE_ORGANIZER_SYSTEM_PROMPT,
@@ -1710,14 +1785,14 @@ export async function organizeNotesStream(
   );
 
   let userPrompt = buildNoteOrganizerUserPrompt(data);
-  if (library && library.length > 0) {
-    userPrompt += '\n' + buildLibraryOverview(library);
+  if (ctx.library.length > 0) {
+    userPrompt += '\n' + buildLibraryOverview(ctx.library);
   }
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, library, onChunk, 0.4, true,
-    onPhase, undefined, undefined, onToolCall, signal, undefined, onReasoning
-  );
+  const content = await callAgentStream({
+    systemPrompt, userPrompt, ctx, handlers,
+    temperature: 0.4, jsonMode: true,
+  });
   return parseAIJSON<NoteOrganizerResult>(content);
 }
 
@@ -1731,16 +1806,12 @@ export async function organizeNotesStream(
  * 与 BookQA 的区别：不绑定单本书，可自由提问任何阅读相关问题
  */
 export async function readingAssistantStream(
-  question: string,
-  library: Book[],
-  conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
-  userProfile: UserProfile | undefined,
-  onChunk: (chunk: string) => void,
-  onPhase: (phase: 'thinking' | 'generating') => void,
-  onToolCall: (toolName: string, label: string, round: number) => void,
-  onReasoning: (text: string) => void,
-  signal?: AbortSignal,
-  onBookUpdate?: BookUpdateCallback,
+  ctx: AgentContext,
+  input: {
+    question: string;
+    conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  },
+  handlers: AgentHandlers,
 ): Promise<string> {
   const systemPrompt = withTools(
     `你是一位智能阅读管家，帮助用户管理书库、推荐书籍、分析阅读习惯。
@@ -1770,18 +1841,14 @@ export async function readingAssistantStream(
 3. 基于品味和缺口，给出有针对性的推荐`,
   );
 
-  let userPrompt = buildLibraryOverview(library);
-  if (userProfile) {
-    userPrompt += `\n【用户画像】\n`;
-    userPrompt += `水平: ${userProfile.readingLevel}\n`;
-    if (userProfile.readingGoal) userPrompt += `目标: ${userProfile.readingGoal}\n`;
-    if (userProfile.preferredCategories?.length) userPrompt += `偏好: ${userProfile.preferredCategories.join(', ')}\n`;
-  }
-  userPrompt += `\n【用户问题】\n${question}`;
+  let userPrompt = buildLibraryOverview(ctx.library);
+  userPrompt += buildProfileBlock(ctx.userProfile);
+  userPrompt += `\n【用户问题】\n${input.question}`;
 
-  const content = await callAgentStream(
-    systemPrompt, userPrompt, library, onChunk, 0.7, false,
-    onPhase, conversationHistory, userProfile, onToolCall, signal, onBookUpdate, onReasoning
-  );
+  const content = await callAgentStream({
+    systemPrompt, userPrompt, ctx, handlers,
+    temperature: 0.7, jsonMode: false,
+    conversationHistory: input.conversationHistory,
+  });
   return content;
 }

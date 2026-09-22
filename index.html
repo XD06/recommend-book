@@ -8,8 +8,9 @@
     <style>
       html { background: #fafafa; color-scheme: light; }
       body { margin: 0; background: #fafafa; }
-      /* 键盘刷新后 Chrome 会把焦点还给文档，命中 :focus-visible 时在撑满视口的 body 上画一圈默认黑色描边；
-         styles.css 是 JS 注入的，晚于首帧，所以这条抑制必须内联在 head 里 */
+      /* 兜底：styles.css 由 JS 注入、晚于首帧，若 UA 默认描边先画出来就会沿撑满视口的 body 边缘闪一圈，
+         所以抑制必须内联在 head 里。注意：2026-09-22 实测已证明"刷新闪黑带"与焦点环无关
+         （无痕、关硬件加速、生产构建、about:blank 全照样闪），这条只是常规加固，别再指望它治那个症状 */
       html:focus-visible, body:focus-visible { outline: none; box-shadow: none; }
     </style>
   </head>

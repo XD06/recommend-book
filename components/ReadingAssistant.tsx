@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Book, UserProfile } from '../types';
+import { Book } from '../types';
 import { readingAssistantStream, ChatMessage, ApiError } from '../services/geminiService';
 import { useTypewriter } from '../hooks/useTypewriter';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
@@ -16,8 +16,6 @@ import {
 } from '@phosphor-icons/react';
 
 interface ReadingAssistantProps {
-  library: Book[];
-  userProfile?: UserProfile;
   onBookUpdate?: (bookId: string, updates: Partial<Book>) => void;
 }
 
@@ -28,7 +26,7 @@ const QUICK_QUESTIONS = [
   '推荐一本适合碎片时间读的书',
 ];
 
-export const ReadingAssistant: React.FC<ReadingAssistantProps> = ({ library, userProfile, onBookUpdate }) => {
+export const ReadingAssistant: React.FC<ReadingAssistantProps> = ({ onBookUpdate }) => {
   const storageKey = 'reading-assistant-chat';
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -86,9 +84,7 @@ const ai = useAIActivity();
       const reply = await readingAssistantStream(
         {
           question,
-          library,
           conversationHistory: messages,
-          userProfile,
         },
         {
           onChunk: (chunk) => typewriter.append(chunk),

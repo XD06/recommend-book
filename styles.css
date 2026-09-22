@@ -84,7 +84,9 @@
   }
 
   /* Focus Ring - Subtle */
-  /* 先用 outline:none 收掉浏览器默认描边：body 恰好撑满视口，默认描边会在刷新时闪成一整圈黑框 */
+  /* outline:none 是有效兜底（body 恰好撑满视口，UA 默认描边会沿整页边缘画一圈），
+     但 2026-09-22 实测证明它**不是**"刷新闪黑框"的成因：关掉焦点环、换无痕窗口、
+     生产构建、about:blank 全都照样闪。勿再往这里加抑制规则找那个症状。见 CHANGELOG「已定位、未修复」条 */
   :focus-visible {
     @apply outline-none;
   }
