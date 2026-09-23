@@ -118,7 +118,9 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
           : [
               t.result.analysis || '',
               t.result.recommendationStrategy || '',
-              ...(t.result.libraryMatches || []).map(m => `书库推荐: 《${m.bookId}》(${m.role || 'unknown'}) - ${m.reason}`),
+              // 书名优先、ID 附带：只给 UUID 时模型要靠 get_book_details 反查才知道
+              // 上次推了什么（实测多耗 1 轮）；这里的 ID 已过服务端校验，可放心复用
+              ...(t.result.libraryMatches || []).map(m => `书库推荐: 《${m.title || m.bookId}》[id:${m.bookId}] (${m.role || 'unknown'}) - ${m.reason}`),
               ...(t.result.externalMatches || []).map(r => `外部推荐: 《${r.title}》-${r.author} (${r.role || 'unknown'}) - ${r.reason}`),
             ].join('\n');
         return [

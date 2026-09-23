@@ -69,7 +69,7 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 
 ## 4. 核心抽象与设计模式
 
-- **Agent 插槽式工具循环**：`aiService` 的循环不认识任何具体工具，只做 `tool_calls` → 执行 → 回传。但"加一个工具只改一处"是幻觉：`libraryTools.ts` 里定义、`isWriteTool()`、`describeToolCall()`、`executeLibraryTool()` 的 case 四处都要动，漏掉 `isWriteTool` 会让写工具的结果被本次请求的缓存吞掉（写进去了、模型却继续按旧值回答）。循环对工具唯一的特判是 `isLibraryCatalogTool()` —— 它决定"这次算不算真查过书目"，画像类工具明确不算，否则一次 `get_user_profile` 就能蒙过硬闸门。
+- **Agent 插槽式工具循环**：`aiService` 的循环不认识任何具体工具，只做 `tool_calls` → 执行 → 回传。但"加一个工具只改一处"是幻觉：`libraryTools.ts` 里定义、`isWriteTool()`、`describeToolCall()`、`executeLibraryTool()` 的 case 四处都要动，漏掉 `isWriteTool` 会让写工具的结果被本次请求的缓存吞掉（写进去了、模型却继续按旧值回答）。循环对工具唯一的特判是 `isLibraryCatalogTool()` —— 它决定"这次算不算真查过书目"，画像类工具明确不算，否则一次 `get_user_profile` 就能蒙过硬闸门。另：挂给模型的名单出自 `getAllTools()`，配了联网搜索时是 10 个书库工具 + `web_search`/`web_fetch` 共 12 个（日志里 `tools=12` 是这个意思，不是书库工具数变了）。
 - **工具缓存与 Web 用量是请求作用域**：`toolCache`、`webCalls`、`webCostUsd` 挂在 `AgentContext` 上，每个请求一份，随请求结束一起回收。早先它们是模块级全局，等于跨用户共享缓存、配额计数跨请求累计——单用户自测看不出问题，多用户下缓存会命中别人的书、次数限制会莫名其妙提前触发。例外是 `webSearchService` 里的搜索结果缓存：键是查询词、值是对公开网页的检索结果，不掺用户数据，跨请求共享是收益不是泄漏，所以仍是进程级。
 - **AI 双通道**：优先走 `LITELLM_BASE_URL`（OpenAI 兼容 HTTP + fetch，支持 reasoning 与 tool_calls 增量收集），未配置时回退 DeepSeek SDK。两者在 `aiService` 内收敛为统一接口。
 - **统一错误结构**：业务错误抛 `AppError`（含 statusCode/code/details），全局错误中间件统一输出 `{ success: false, error, code, details }`；Zod 校验失败同样映射到该结构。
