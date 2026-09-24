@@ -44,6 +44,9 @@ const ai = useAIActivity();
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // 卸载即中止，否则遗留的流会一直占住浏览器单域名 6 连接池里的一条（见 AIAdvisor 同名 effect）
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   useEffect(() => {
     try {
       if (messages.length > 0) {

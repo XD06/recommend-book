@@ -28,6 +28,8 @@ function useBookLibrary() {
   const [error, setError] = useState<string | null>(null);
   const saveBooksTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveMetaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveBooksInFlightRef = useRef(false);
+  const dirtyBooksRef = useRef<Book[] | null>(null);
   const isInitialLoad = useRef(true);
 
   // 初始加载（含一次性 localStorage → SQLite 迁移）
@@ -81,21 +83,35 @@ function useBookLibrary() {
     }
   }, []);
 
+  // 全量保存串行化：一次 POST /books/batch 带整库（实测 413 本 ≈667KB、后端同步 ≈88ms），
+  // 且要占住浏览器单域名 6 条连接之一。防抖只挡得住"连续改"，挡不住"流式进行中
+  // aiBookUpdate 每来一条就 setBooks 一次"—— 重叠的保存会互相冲掉结果，故同一时刻只允许一条在飞。
+  const flushBooksSave = useCallback(async () => {
+    if (saveBooksInFlightRef.current) return; // 在飞的那条收尾时会检查脏标记并补存
+    const pending = dirtyBooksRef.current;
+    if (!pending) return;
+    dirtyBooksRef.current = null;
+    saveBooksInFlightRef.current = true;
+    try {
+      const saved = await saveBooks(pending);
+      // 静默更新（可能后端做了数据清洗）；保存期间又改过就别覆盖更新的本机状态
+      if (!dirtyBooksRef.current) setBooksState(saved);
+    } catch (err: any) {
+      console.error('[BookLibrary] 保存失败:', err.message);
+    } finally {
+      saveBooksInFlightRef.current = false;
+    }
+    if (dirtyBooksRef.current) void flushBooksSave();
+  }, []);
+
   // 防抖保存书库到后端
   const setBooks = useCallback((newBooks: Book[]) => {
     setBooksState(newBooks);
+    dirtyBooksRef.current = newBooks;
     // 防抖：500ms 内不重复保存（独立 timer，不与分类元数据共享）
     if (saveBooksTimerRef.current) clearTimeout(saveBooksTimerRef.current);
-    saveBooksTimerRef.current = setTimeout(async () => {
-      try {
-        const saved = await saveBooks(newBooks);
-        // 静默更新（可能后端做了数据清洗）
-        setBooksState(saved);
-      } catch (err: any) {
-        console.error('[BookLibrary] 保存失败:', err.message);
-      }
-    }, 500);
-  }, []);
+    saveBooksTimerRef.current = setTimeout(() => { void flushBooksSave(); }, 500);
+  }, [flushBooksSave]);
 
   // 防抖保存分类元数据
   const setCategoryMeta = useCallback((newMeta: Record<string, CategoryMeta>) => {

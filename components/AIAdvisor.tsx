@@ -71,6 +71,11 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // 切页会硬重挂载本组件（App 用 key={activeTab}），不中止就遗留一条 SSE 连接。
+  // 浏览器对单域名只有 6 条 HTTP/1.1 连接，攒够之后所有接口请求都在队列里等
+  // （实测一次普通 GET /profile/stats 从 15ms 变 7.5s）。
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   const ai = useAIActivity();
 
   const handleClearHistory = () => {

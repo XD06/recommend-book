@@ -79,6 +79,8 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
   - **详情** `getBookDetail` → 先查内存缓存（根目录 `cache.json` 全局种子缓存 + `backend/data/user-douban-cache.json` 用户缓存，两者均本地文件不入库）；未命中只能由 `douban_mini` Python 抓取器实时抓取并回写用户缓存，**Node 侧无兜底**，缺 Python 即失败。
   - **封面**：`GET /api/douban/cover` 后端转发，绕过豆瓣防盗链。
 
+- **并发上限写在浏览器里，不在后端**：前端到 `:3001` 只有一个 HTTP/1.1 源，而浏览器对单域名只给 6 条连接；SSE 响应的存活时间 = 整个 AI 请求的时长，所以"能同时挂几条流"由这个 6 决定，而不是由后端吞吐决定（实测同一后端同样 12 个各持 6s 的请求：Node 发服务端峰值并发 12 / 墙钟 6.0s，Chrome 发服务端只到 6 / 墙钟 32.0s）。两个推论已落到代码：① 流式组件卸载时必须 `abort()`，因为 `App.tsx` 用 `key={activeTab}` 让切页等于重挂载，不中止的流没人接但也一直占着连接；② 整库 `POST /books/batch` 串行化，不给它和流式请求叠并发。换 host 写法（`localhost` vs `127.0.0.1`）不加分，真要突破只能上 HTTP/2 或多源分片。
+
 ## 5. 外部依赖与集成点
 
 | 依赖 | 用途 | 配置 |
