@@ -1,0 +1,74 @@
+{
+  "_readme": [
+    "AI 荐书评估集 —— 覆盖路线图 docs/AI-RECOMMENDATION-ROADMAP.md §4.2 要求的五类 query。",
+    "改动提示词/注入策略后跑 backend/eval-advisor.js 前后对比，不要以『构建通过』冒充『推荐变好了』。",
+    "id 稳定：同一 id 的前后结果可以直接逐条对比。"
+  ],
+  "queries": [
+    {
+      "id": "goal-explicit",
+      "kind": "明确目标",
+      "prompt": "我想系统学一下认知心理学，书架上哪些能接着读？给我一个具体的阅读顺序。",
+      "watchFor": "是否真的查到书库、是否给出真实存在的书与顺序，而非泛泛谈方法"
+    },
+    {
+      "id": "mood-vague",
+      "kind": "模糊心情",
+      "prompt": "最近工作压力有点大，想读点轻松的",
+      "watchFor": "是否按认知负荷处理、是否给出具体书而非安慰话"
+    },
+    {
+      "id": "level-challenge",
+      "kind": "难度适配",
+      "prompt": "别给我入门书了，我想要一本真正有难度、能卡住我的技术书。",
+      "watchFor": "P0-1：画像默认 beginner 是否把它压回 Basic"
+    },
+    {
+      "id": "category-recall",
+      "kind": "分类检索",
+      "prompt": "我书库里心理学相关的书有哪些？挑几本值得先读的。",
+      "watchFor": "P1-3：keyword 检索漏分类时会不会答『没有几本』（真实值 79 本）"
+    },
+    {
+      "id": "cross-domain",
+      "kind": "跨类/意外性",
+      "prompt": "我在读《代码大全》，想同时配一本完全不同领域的书换换脑子。",
+      "watchFor": "是否真的按交错学习配书、是否引用了在读状态"
+    },
+    {
+      "id": "continuation",
+      "kind": "续读/证据具体",
+      "prompt": "我在读《思考，快与慢》，读完这本章接着读什么比较好？",
+      "watchFor": "P0-3：完成率为 0 时是否仍能给出有据可依的续读建议"
+    },
+    {
+      "id": "external-books",
+      "kind": "站外新书",
+      "prompt": "推荐几本书架上没有的经济学好书，要能落地的。",
+      "watchFor": "externalMatches 是否真实存在、confidence 是否诚实"
+    },
+    {
+      "id": "smalltalk",
+      "kind": "寒暄闸门",
+      "prompt": "你好",
+      "watchFor": "模式闸门：必须 conversation，不得输出书单"
+    },
+    {
+      "id": "vague-request",
+      "kind": "笼统请求",
+      "prompt": "推荐几本好书",
+      "watchFor": "模式闸门：应先追问方向而不是直接甩书单"
+    }
+  ],
+  "multiTurn": [
+    {
+      "id": "memory-profile",
+      "kind": "多轮记忆 + 画像落盘",
+      "turns": [
+        "我今年的目标是补上统计学和因果推断这块，每天大概能读 40 分钟。",
+        "那按这个目标，我书架上现在最该先读哪本？"
+      ],
+      "watchFor": "P0-1/P1-1/P1-4：第二问是否用上了第一问的信息（画像或对话记忆）"
+    }
+  ]
+}
