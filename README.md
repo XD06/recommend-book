@@ -48,9 +48,39 @@ services/                前端 API 客户端（authService / bookService / gemi
 hooks/                   流式状态、打字机、防抖等 React Hooks
 utils/                   纯函数工具（书名去重）
 backend/                 Express 后端（routes / services / prompts / db）
+  └ eval-advisor.js      AI 荐书评估台：隔离运行 + 前后对比（见下）
+  └ eval-queries.json    评估集（明确目标 / 模糊心情 / 难度 / 跨类 / 续读 / 站外 / 闸门）
 douban_mini/             Python 豆瓣抓取器（依赖 aiohttp + beautifulsoup4 + lxml）
 docs/                    项目文档与归档
 ```
+
+## 推荐质量怎么验证
+
+`npm run build` 只能证明代码能编译，**证明不了"推荐变好了"**。为此仓库带了一个评估台：
+
+```bash
+cd backend && npm run build
+node eval-advisor.js --run --tag=baseline --model=step-3.7-flash   # 会真实计费
+#   改代码、重新 build 之后
+node eval-advisor.js --run --tag=after --model=step-3.7-flash
+node eval-advisor.js --compare=baseline,after                      # 不发请求、不花钱
+```
+它按"三点隔离"跑：库换成 `VACUUM INTO` 快照、模型名由 env 覆盖、登录态现签 JWT，全程在 `backend/.eval-run/<tag>/` 下，**不碰你正在用的库与 `backend/.env`**，也不与 `:3001` 的实例冲突（用 3999）。不传 `--run` 只会打印用法 —— 这类脚本直连真实 AI，跑之前请确认要花这笔 token。
+
+另外两个**零 token**的离线用例，改完相关代码随手就能跑：
+
+```bash
+node check-validation.js           # 推荐输出的清洗：幻觉 bookId 修复/丢弃、站外推荐与书库去重
+node check-profile-provenance.js   # 画像来源：用户填写不被 AI 覆盖、同值跳过、来源升级
+node inspect-context.js            # 本次请求到底往模型里塞了什么：逐段字符数、工具清单、闸门状态
+```
+
+**想看 agent 的全貌**（一次请求的 9 步、能力边界、哪些端点没接线）：打开 [docs/agent-map.html](docs/agent-map.html)。`inspect-context.js` 与线上请求共用同一个 `buildAdvisorPrompt()`，所以它报的数字与真实请求一致。
+
+**关于画像：AI 不会覆盖你自己填的，而且它记的东西可以撤。** 用户在设置页填的、或用户在对话里明确说过的字段，记为"用户来源"，AI 只能沿用不能改写；AI 从对话里记录的字段会标注"可能是推测"并附带依据（用户原话），只填空白字段。设置页的「这些信息从哪来」可以逐字段核对，「画像改动历史」可以逐条撤销（值的前后对比、来源、依据、时间都在）。
+
+**AI 怎么记东西（两条路，都不依赖模型自觉）**：① 对话中它自己判断要不要调 `update_user_profile`（尾部指令 + 落盘闸门兜底）；② 回答完之后再跑一次**回合后异步抽取**（`POST /api/ai/profile/extract`）——只问"用户这句话里有没有稳定的画像信息"，闲聊直接跳过、不花任何调用。走②记下的内容会在对话里当场弹「AI 记住了…（撤销）」，撤销后值和来源一起还原。
+
 
 ## 环境变量
 

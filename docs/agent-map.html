@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepRead · AI Agent 全貌图</title>
+<style>
+  :root{
+    --bg:#fafafa; --card:#fff; --line:#e4e4e7; --line2:#f1f1f3;
+    --ink:#18181b; --muted:#71717a; --faint:#a1a1aa;
+    --fe:#4f46e5; --be:#0891b2; --ag:#7c3aed; --db:#059669; --ex:#d97706; --gate:#dc2626;
+    --fe-bg:#eef2ff; --be-bg:#ecfeff; --ag-bg:#f5f3ff; --db-bg:#ecfdf5; --ex-bg:#fffbeb; --gate-bg:#fef2f2;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 96px}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Courier New",monospace;font-size:.86em}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.01em}
+  h2{font-size:19px;margin:0 0 4px;letter-spacing:-.01em}
+  h3{font-size:15px;margin:0 0 8px}
+  p{margin:0 0 10px}
+  .sub{color:var(--muted);font-size:14px}
+  header{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:28px}
+  section{margin:0 0 34px}
+  .sechead{display:flex;align-items:baseline;gap:10px;margin-bottom:14px}
+  .sechead .n{font:600 12px/1 ui-monospace,monospace;color:var(--faint);border:1px solid var(--line);
+    border-radius:5px;padding:5px 7px;background:var(--card)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+  @media(max-width:760px){.g2,.g3{grid-template-columns:1fr}}
+  .muted{color:var(--muted)}
+  .small{font-size:13px}
+  .tiny{font-size:12px}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 7px;border-radius:99px;border:1px solid}
+  .t-fe{color:var(--fe);background:var(--fe-bg);border-color:#c7d2fe}
+  .t-be{color:var(--be);background:var(--be-bg);border-color:#a5f3fc}
+  .t-ag{color:var(--ag);background:var(--ag-bg);border-color:#ddd6fe}
+  .t-db{color:var(--db);background:var(--db-bg);border-color:#a7f3d0}
+  .t-ex{color:var(--ex);background:var(--ex-bg);border-color:#fde68a}
+  .t-gate{color:var(--gate);background:var(--gate-bg);border-color:#fecaca}
+  /* 流程时间线 */
+  .flow{position:relative;padding-left:44px}
+  .flow:before{content:"";position:absolute;left:15px;top:8px;bottom:8px;width:2px;background:var(--line)}
+  .step{position:relative;margin-bottom:12px}
+  .step:last-child{margin-bottom:0}
+  .step .dot{position:absolute;left:-44px;top:12px;width:32px;height:32px;border-radius:50%;
+    background:var(--card);border:2px solid var(--line);display:flex;align-items:center;justify-content:center;
+    font:600 13px/1 ui-monospace,monospace;color:var(--muted)}
+  .step[data-layer="fe"] .dot{border-color:var(--fe);color:var(--fe)}
+  .step[data-layer="be"] .dot{border-color:var(--be);color:var(--be)}
+  .step[data-layer="ag"] .dot{border-color:var(--ag);color:var(--ag)}
+  .step[data-layer="db"] .dot{border-color:var(--db);color:var(--db)}
+  .step[data-layer="gate"] .dot{border-color:var(--gate);color:var(--gate)}
+  .step .card{border-left:3px solid var(--line)}
+  .step[data-layer="fe"] .card{border-left-color:var(--fe)}
+  .step[data-layer="be"] .card{border-left-color:var(--be)}
+  .step[data-layer="ag"] .card{border-left-color:var(--ag)}
+  .step[data-layer="db"] .card{border-left-color:var(--db)}
+  .step[data-layer="gate"] .card{border-left-color:var(--gate)}
+  .step h3{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin-top:8px;font-size:13px}
+  .kv dt{color:var(--faint);white-space:nowrap}
+  .kv dd{margin:0;color:var(--muted)}
+  /* 条形图 */
+  .bar{display:flex;height:34px;border-radius:8px;overflow:hidden;border:1px solid var(--line);margin:6px 0 4px}
+  .bar span{display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#fff;white-space:nowrap}
+  .b-sys{background:#7c3aed}.b-usr{background:#0891b2}.b-tools{background:#d97706}
+  .scale{display:flex;justify-content:space-between;font-size:11px;color:var(--faint)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line2);vertical-align:top}
+  th{font-size:12px;color:var(--faint);font-weight:600;border-bottom:1px solid var(--line)}
+  tr:last-child td{border-bottom:none}
+  td.n{text-align:right;font-family:ui-monospace,monospace;white-space:nowrap;color:var(--muted)}
+  .box{border:1px dashed var(--line);border-radius:10px;padding:12px 14px;background:#fcfcfd}
+  .warn{background:var(--gate-bg);border:1px solid #fecaca;border-radius:10px;padding:12px 14px}
+  .ok{background:var(--db-bg);border:1px solid #a7f3d0;border-radius:10px;padding:12px 14px}
+  .legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  details{border:1px solid var(--line);border-radius:10px;background:var(--card);padding:10px 14px;margin-top:10px}
+  summary{cursor:pointer;font-weight:600;font-size:14px}
+  details[open] summary{margin-bottom:10px}
+  ol,ul{margin:6px 0 0;padding-left:20px}
+  li{margin:3px 0}
+  .mono-block{background:#fbfbfc;border:1px solid var(--line2);border-radius:8px;padding:10px 12px;
+    font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);white-space:pre-wrap;line-height:1.6}
+  hr{border:none;border-top:1px solid var(--line);margin:18px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>DeepRead · AI Agent 全貌图</h1>
+  <p class="sub">一次推荐请求，从点击到落库，到底发生了什么 · 以及它<b>不能</b>做什么</p>
+  <p class="tiny muted" style="margin-top:10px">
+    文中所有字符数来自 <code>cd backend &amp;&amp; node inspect-context.js</code>（零 token、读你的库快照），
+    与线上请求共用同一个 <code>buildAdvisorPrompt()</code>，所以不会与真实请求漂移。
+    样本：413 本书库、EXA 联网开启。
+  </p>
+  <div class="legend">
+    <span class="tag t-fe">前端</span>
+    <span class="tag t-be">后端路由</span>
+    <span class="tag t-ag">Agent 循环</span>
+    <span class="tag t-db">数据 / 落库</span>
+    <span class="tag t-gate">闸门 / 校验</span>
+    <span class="tag t-ex">外部服务</span>
+  </div>
+</header>
+
+<!-- ══════════════════════════════ A ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">A</span><h2>一次推荐请求的全流程</h2></div>
+  <p class="small muted" style="margin-bottom:14px">点「AI 顾问」发一句话 → 下面这 9 步。编号 4–8 全在后端，前端只看得到 SSE 事件。</p>
+
+  <div class="flow">
+
+    <div class="step" data-layer="fe">
+      <div class="dot">1</div>
+      <div class="card">
+        <h3><span class="tag t-fe">前端</span> 发起请求</h3>
+        <p class="small">组件 <code>AIAdvisor</code> → <code>POST /api/ai/recommend/stream</code>，带 <code>userRequest</code>、可选心境、以及<b>从服务端拉回来的对话历史</b>。</p>
+        <dl class="kv">
+          <dt>不传书库</dt><dd>请求体只有 KB 级；书库与画像一律后端从 SQLite 取，客户端传了也不算数</dd>
+          <dt>卸载即中止</dt><dd>切页会硬重挂载，<code>useEffect(() =&gt; () =&gt; abort())</code> 不加就会遗留 SSE 占住浏览器 6 条连接之一</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="step" data-layer="be">
+      <div class="dot">2</div>
+      <div class="card">
+        <h3><span class="tag t-be">后端路由</span> 鉴权 → 校验 → 装上下文</h3>
+        <p class="small"><code>requireAuth</code>（JWT）→ Zod 校验请求体 → <code>createAgentContext(userId)</code>。</p>
+        <dl class="kv">
+          <dt>装进来什么</dt><dd>书库（<code>books</code>）、画像（<code>user_profiles</code> + 逐字段来源 <code>profile_field_meta</code>）、采纳反馈摘要（<code>recommendation_feedback</code>）</dd>
+          <dt>请求级作用域</dt><dd>工具结果缓存 / 联网调用计数挂在 ctx 上，随请求生灭（早先是模块级全局 → 会跨用户串）</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="step" data-layer="ag">
+      <div class="dot">3</div>
+      <div class="card">
+        <h3><span class="tag t-ag">Agent</span> 组装提示词（<b>每次请求 11.5k token 的固定开销</b>）</h3>
+        <p class="small">详见 <b>B 段</b>。要点：静态部分占 88%，真正属于"你的数据"的只有 12%。</p>
+      </div>
+    </div>
+
+    <div class="step" data-layer="ag">
+      <div class="dot">4</div>
+      <div class="card">
+        <h3><span class="tag t-ag">Agent</span> Phase 1：静默工具循环（≤ 4 轮，非流式）</h3>
+        <p class="small">模型决定调哪些工具 → 并行执行 → 结果按原顺序塞回 messages → 再问一轮。全程不推送给用户，只推 <code>reasoning</code> 与 <code>tool_call</code> 标签。</p>
+        <dl class="kv">
+          <dt>为什么是 4 轮</dt><dd>101 本以上概览不注入书名，模型必须先查工具才拿得到真实 bookId；实测 413 本库上"从书架挑三本"恰好用满 3 轮，第 3 轮既是查询轮又是收敛轮</dd>
+          <dt>写工具的副作用</dt><dd>任何写操作都会 <code>toolCache.clear()</code>，让同轮后续工具读到新值</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="step" data-layer="gate">
+      <div class="dot">5</div>
+      <div class="card">
+        <h3><span class="tag t-gate">闸门</span> 两道结构性强制（不是劝导）</h3>
+        <p class="small">提示词中间的话会被稀释（370+ 行系统提示里，"落盘才算记住"写在 <b>第 35 行</b>）。所以关键规则改成结构强制：</p>
+        <dl class="kv">
+          <dt>书库硬闸门</dt><dd>声称给了 <code>libraryMatches</code> 却一次书目工具都没调 → 追加 1 轮纠正（≤100 本不启用，概览里就是全量书名）<br><b>本次请求：已启用</b></dd>
+          <dt>画像落盘闸门</dt><dd>用户消息命中"我的水平 / 我的目标是 / 我每天能读 40 分钟"这类自述，而模型一次 <code>update_user_profile</code> 都没调 → 追加 1 轮<br><b>本次请求：未启用</b>（这句话里没有自述）</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="step" data-layer="ag">
+      <div class="dot">6</div>
+      <div class="card">
+        <h3><span class="tag t-ag">Agent</span> Phase 2：流式出最终 JSON</h3>
+        <p class="small">基于工具收集到的内容流式生成，SSE 逐块推 <code>chunk</code>。若 Phase 1 最后一轮已经是合法 JSON，则跳过 Phase 2 直接输出（省一次调用）。</p>
+      </div>
+    </div>
+
+    <div class="step" data-layer="gate">
+      <div class="dot">7</div>
+      <div class="card">
+        <h3><span class="tag t-gate">校验</span> 服务端清洗模型输出</h3>
+        <p class="small"><code>validateAdvisorJson</code> 逐条核对 <code>libraryMatches</code>：ID 对得上保留 → 对不上用书名反查修复 → 修不掉才丢弃；<code>externalMatches</code> 用同一套书名归一化查重（提示词禁止推库里的书，模型仍会犯）。</p>
+        <dl class="kv">
+          <dt>为什么必须在服务端做</dt><dd>前端渲染是按 bookId 找书、找不到整条不画，一个幻觉 ID 会让人以为"模型只推了 2 本"</dd>
+          <dt>回传</dt><dd><code>matchValidation { kept, repaired, dropped, droppedTitles, externalDuplicates }</code></dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="step" data-layer="db">
+      <div class="dot">8</div>
+      <div class="card">
+        <h3><span class="tag t-db">落库</span> 记录"这次展示了哪些" + 回传</h3>
+        <p class="small">写 <code>recommendation_feedback</code> 的 <code>action='shown'</code> 行（采纳率的<b>分母</b>），并用服务端生成的 <code>requestId</code> 串起来 → <code>done</code> 事件回传完整结果。</p>
+      </div>
+    </div>
+
+    <div class="step" data-layer="fe">
+      <div class="dot">9</div>
+      <div class="card">
+        <h3><span class="tag t-fe">前端</span> 渲染 + 两条回写</h3>
+        <dl class="kv">
+          <dt>渲染</dt><dd>卡片用 <code>done</code> 里那份（已清洗），不是 chunk 原文</dd>
+          <dt>回写 ①</dt><dd>点「想读 / 跳过」→ <code>POST /api/ai/recommend-feedback</code>，带服务端给的 <code>requestId</code>，下次推荐会在【采纳反馈】段读到</dd>
+          <dt>回写 ②</dt><dd>AI 改过书状态时收 <code>book_update</code> → patch 回 <code>useBookLibrary</code>，否则客户端下一次<b>整库全量保存</b>会把刚写的状态冲掉</dd>
+          <dt>回写 ③</dt><dd>回答渲染完后，再发一次<b>回合后画像抽取</b>（两道零成本闸门先挡）→ 真有写入就弹「AI 记住了…（撤销）」提示条</dd>
+        </dl>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════════════════════ B ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">B</span><h2>提示词里到底有什么（实测）</h2></div>
+  <div class="card">
+    <div class="bar">
+      <span class="b-sys" style="width:61%">system 11,250 字符 · 61%</span>
+      <span class="b-tools" style="width:27%">tools 4,998 · 27%</span>
+      <span class="b-usr" style="width:12%">user 2,157 · 12%</span>
+    </div>
+    <div class="scale"><span>0</span><span>合计 18,405 字符 ≈ 11.5k token（不含对话历史与工具结果）</span></div>
+    <hr>
+    <div class="grid g3">
+      <div class="box"><h3>system 11,250</h3><p class="tiny muted">推荐方法论原始模板 9,762 字符（ZPD／认知负荷／交错学习／三本书组合／4 个完整示例）＋ <code>withTools()</code> 附加 1,488 字符（工具说明、联网使用准则、轮次说明）。<br><b>每次请求都要重发一遍。</b></p></div>
+      <div class="box"><h3>tools 4,998</h3><p class="tiny muted">12 个工具的 JSON Schema。这是"描述工具"的成本，与你的数据无关。<br>关掉 EXA 会降到 10 个工具。</p></div>
+      <div class="box"><h3>user 2,157</h3><p class="tiny muted">唯一与"你"有关的部分：书库统计、品味画像、在读书籍、画像，以及用户请求本身。</p></div>
+    </div>
+    <hr>
+    <h3>user prompt 逐段（段落顺序 = 拼装顺序）</h3>
+    <table>
+      <thead><tr><th>段</th><th>内容摘要</th><th class="n">字符</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">【书库概览】</td><td class="muted">413 本（在读 4 / 已读 0 / 未读 409）</td><td class="n">32</td></tr>
+        <tr><td class="mono">【分类分布】</td><td class="muted">19 个分类，按藏书量降序，含各自在读/已读/未读</td><td class="n">427</td></tr>
+        <tr><td class="mono">【难度分布】</td><td class="muted">入门 250 / 进阶 133 / 专家 30</td><td class="n">23</td></tr>
+        <tr><td class="mono">【豆瓣评分】</td><td class="muted">393 本收录，均 8.5，<b>标注 10 分制、大众评分、不代表用户偏好</b></td><td class="n">47</td></tr>
+        <tr><td class="mono">【用户自评】</td><td class="muted">"暂无 —— 用户还没亲手评分过任何书，不要从豆瓣分推断 TA 的评价倾向"</td><td class="n">45</td></tr>
+        <tr><td class="mono">【阅读品味画像】</td><td class="muted">难度偏好 / 阅读行为 / 阅读广度 / 偏好作者 / 藏书结构（<b>无行为数据时不推断人格</b>）</td><td class="n">183</td></tr>
+        <tr><td class="mono">【在读书籍】</td><td class="muted">4 本含进度，标题里写明"进度 0% 只说明还没记录，不代表没在读"</td><td class="n">766</td></tr>
+        <tr><td class="mono">【书库索引】</td><td class="muted"><b>未注入书名</b>（&gt;300 本档），并明确要求"必须先用工具拿候选书目，禁止凭分类名臆测"</td><td class="n">132</td></tr>
+        <tr><td class="mono">【用户画像】</td><td class="muted">未设置 → 注入"不要假设 TA 的水平（默认值 beginner 不是用户说的）"</td><td class="n">160</td></tr>
+        <tr><td class="mono">【用户请求】</td><td class="muted">用户原话 + 心境 + 尾部两道指令（模式闸门、落盘要求）</td><td class="n">342</td></tr>
+      </tbody>
+    </table>
+    <p class="tiny muted" style="margin-top:10px">另：调用方传了对话历史时，还会按 40 条 / 12,000 token 裁剪后作为结构化 messages 注入；Phase 1 每轮的<b>工具结果</b>也追加进 messages（<code>search_library</code> 默认一次 15 条）。</p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════ C ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">C</span><h2>它手里有什么：12 个工具</h2></div>
+  <p class="small muted" style="margin-bottom:12px">8 读 + 2 写 + 2 联网（联网需 <code>EXA_API_KEY</code>）。"书目类"才是<b>这次算不算真查过书库</b>的判据——画像类不算，否则一次 <code>get_user_profile</code> 就能蒙过书库硬闸门。</p>
+  <div class="card" style="padding:0;overflow:hidden">
+    <table>
+      <thead><tr><th>工具</th><th>类型</th><th>能拿到什么</th><th>谁在用</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">search_library</td><td><span class="tag t-db">读书目</span></td><td class="muted">按关键词/分类/标签/状态/难度搜书，返回 15 条简报（关键词已覆盖分类与子分类）</td><td class="tiny muted">推荐、管家</td></tr>
+        <tr><td class="mono">get_book_details</td><td><span class="tag t-db">读书目</span></td><td class="muted">单本详情：AI 解读、豆瓣摘要与标签、阅读进度、笔记</td><td class="tiny muted">推荐、问答</td></tr>
+        <tr><td class="mono">get_category_stats</td><td><span class="tag t-db">读书目</span></td><td class="muted">某分类<b>全部</b>书籍 + 统计（这是 >300 本档取书名的主力）</td><td class="tiny muted">推荐</td></tr>
+        <tr><td class="mono">get_reading_history</td><td><span class="tag t-db">读书目</span></td><td class="muted">最近读完的列表（完成日期、评分、豆瓣分）</td><td class="tiny muted">推荐</td></tr>
+        <tr><td class="mono">get_reading_taste_profile</td><td><span class="tag t-db">读书目</span></td><td class="muted">品味全量版：知识结构、轨迹、评分倾向、阅读人格（无行为数据时明确拒绝推断）</td><td class="tiny muted">推荐</td></tr>
+        <tr><td class="mono">get_reading_gaps</td><td><span class="tag t-db">读书目</span></td><td class="muted">知识缺口：深度/广度/应用/进度/积压（未读多但无行为时判为 <code>catalog_not_started</code>，不再劝退推荐）</td><td class="tiny muted">推荐</td></tr>
+        <tr><td class="mono">get_reading_notes</td><td><span class="tag t-db">读书目</span></td><td class="muted">用户在某本书上写的笔记与思考</td><td class="tiny muted">问答、管家</td></tr>
+        <tr><td class="mono">get_user_profile</td><td><span class="tag t-ex">读画像</span></td><td class="muted">按来源分组返回：<b>userStated</b> / <b>aiRecorded</b> / <b>unset</b></td><td class="tiny muted">推荐、管家</td></tr>
+        <tr><td class="mono">update_book_status</td><td><span class="tag t-gate">写</span></td><td class="muted">改阅读状态/进度/自评星级 → 直接落 SQLite + <code>book_update</code> 通知前端</td><td class="tiny muted">推荐、问答、管家</td></tr>
+        <tr><td class="mono">update_user_profile</td><td><span class="tag t-gate">写</span></td><td class="muted">写画像（带来源保护，见 E 段）</td><td class="tiny muted">推荐、管家</td></tr>
+        <tr><td class="mono">web_search</td><td><span class="tag t-ex">联网</span></td><td class="muted">搜互联网（书评、书单、作者、学术），单次对话最多 5 次</td><td class="tiny muted">推荐</td></tr>
+        <tr><td class="mono">web_fetch</td><td><span class="tag t-ex">联网</span></td><td class="muted">取指定 URL 正文</td><td class="tiny muted">推荐</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ══════════════════════════════ D ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">D</span><h2>写操作的两条闭环</h2></div>
+  <div class="grid g2">
+    <div class="card">
+      <h3>① 改书：<code class="mono">update_book_status</code></h3>
+      <ol class="small muted">
+        <li>模型调用 → 只写 <code>books</code> 里 Agent 真正改过的列</li>
+        <li>自评星级写进 <code>user_data.userRating</code>（JSON），<b>不碰</b> <code>books.rating</code>（那里躺着导入期的豆瓣分）</li>
+        <li><code>ctx.toolCache.clear()</code>，同轮后续工具立刻读到新值</li>
+        <li>推 <code>book_update</code> 给前端 → patch 内存副本</li>
+      </ol>
+      <p class="tiny muted" style="margin-top:8px">漏接 <code>book_update</code> 不会丢 AI 的写入，但客户端下一次整库全量保存会把它冲掉——所以新增流式端点一律走 <code>sseHandlers()</code>，它不做取舍。</p>
+    </div>
+    <div class="card">
+      <h3>② 记人：<code class="mono">update_user_profile</code>（对话中）</h3>
+      <ol class="small muted">
+        <li>必填 <code>evidence</code>（用户原话）与 <code>userStated</code>（是不是用户本轮亲口说的）</li>
+        <li>写入函数按字段判来源 → 用户来源的字段<b>直接拒绝</b></li>
+        <li>被拒的进 <code>refused</code> 回给模型 → 它必须如实说明"这条是你自己定的"</li>
+        <li>成功的写 <code>profile_field_meta</code>（source / via / evidence）+ <code>profile_write_log</code></li>
+      </ol>
+      <p class="tiny muted" style="margin-top:8px">实测：加尾部指令与闸门之前，27 次真实请求里模型调用此工具 <b>0 次</b>；之后两轮探针都在第 1 轮就写进去了。</p>
+    </div>
+    <div class="card">
+      <h3>③ 记人：回合后异步抽取 <code class="mono">/api/ai/profile/extract</code></h3>
+      <ol class="small muted">
+        <li>回答已经渲染完之后才发（用户看不到这次等待）</li>
+        <li>两道<b>零成本</b>闸门：顾问本轮已落盘 → 跳过；消息未命中自述正则 → 跳过（"你好呀"实测 0.0s、零调用）</li>
+        <li>命中才花一次廉价调用（无工具、无概览，实测 7.3–7.7s），逐字段带原话依据</li>
+        <li><b>一律记为 AI 来源</b>：它没被用户要求过，所以覆盖不了用户定的字段</li>
+        <li>当场弹「AI 记住了…（撤销）」→ <code>POST /api/ai/profile/undo</code> 精确还原</li>
+      </ol>
+      <p class="tiny muted" style="margin-top:8px">为什么要这条路：让模型"顺便记住"不可靠（0/27）。设置页还有完整的「画像改动历史」，值的前后对比与逐条撤销都在那儿。</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <h3>画像字段的四档来源（注入给模型时就是这么标的）</h3>
+    <div class="grid g2" style="margin-top:8px">
+      <div class="ok">
+        <p class="small" style="margin:0"><b>用户自己定的</b> <span class="tag t-db">不可覆盖</span></p>
+        <p class="tiny muted" style="margin:6px 0 0">设置页填的（<code>via=form</code>）或用户在对话里亲口说的（<code>via=conversation</code> + 原话）。注入语："<b>权威，不要覆盖、不要否定</b>；只有用户明确要求改时才动"。</p>
+      </div>
+      <div class="box">
+        <p class="small" style="margin:0"><b>AI 记录/推断的</b> <span class="tag t-ex">可修正</span></p>
+        <p class="tiny muted" style="margin:6px 0 0">只能填空白字段或改自己写过的，必带依据。注入语："<b>是推测，可能不准</b>；与用户当前说法冲突时以用户为准"。</p>
+      </div>
+      <div class="box">
+        <p class="small" style="margin:0"><b>数据库默认值</b></p>
+        <p class="tiny muted" style="margin:6px 0 0">有值却无来源记录（如注册时写的 <code>beginner</code>）。注入语："<b>用户从未确认过，不要当作用户的要求</b>"。这一档就是过去"默认值冒充用户自述"的收口。</p>
+      </div>
+      <div class="box">
+        <p class="small" style="margin:0"><b>尚未设置</b></p>
+        <p class="tiny muted" style="margin:6px 0 0">注入语："可以自然地问，问到后用 <code>update_user_profile</code> 落盘"。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════ E ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">E</span><h2>数据都落在哪</h2></div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="tag t-db">SQLite</span> <code class="mono">backend/data/deepread.db</code></h3>
+      <table>
+        <tbody>
+          <tr><td class="mono">books</td><td class="muted small">书库（每用户独立）+ <code>ai_insight</code> + <code>douban_data</code> + <code>user_data</code>（进度与自评星级）</td></tr>
+          <tr><td class="mono">user_profiles</td><td class="muted small">画像 4 个字段 + <code>ai_analysis</code></td></tr>
+          <tr><td class="mono">profile_field_meta</td><td class="muted small"><b>新增</b>：逐字段来源（谁写的 / 渠道 / 依据原话）</td></tr>
+          <tr><td class="mono">profile_write_log</td><td class="muted small"><b>新增</b>：追加式画像改动日志（改前值 + 来源 + 依据 + 是否已撤销）——撤销与审计的地基</td></tr>
+          <tr><td class="mono">conversations</td><td class="muted small"><b>本轮才接上</b>：AI 顾问会话（此前只建表、全仓无写入方）</td></tr>
+          <tr><td class="mono">recommendation_feedback</td><td class="muted small">想读 / 跳过 + <b>服务端写的 <code>shown</code> 展示记录</b>（采纳率分母）</td></tr>
+          <tr><td class="mono">category_meta</td><td class="muted small">分类说明</td></tr>
+        </tbody>
+      </table>
+      <p class="tiny muted" style="margin-top:8px">没有迁移系统：加<b>新表</b>每次启动自动建；改<b>已有表结构</b>不生效，只能手工 ALTER 或删库重建。</p>
+    </div>
+    <div class="card">
+      <h3><span class="tag t-ex">文件与外部</span></h3>
+      <table>
+        <tbody>
+          <tr><td class="mono">cache.json</td><td class="muted small">豆瓣全局种子缓存（仓库根，不入库）</td></tr>
+          <tr><td class="mono">backend/data/user-douban-cache.json</td><td class="muted small">用户级豆瓣详情缓存</td></tr>
+          <tr><td class="mono">douban_mini/（Python）</td><td class="muted small">详情缓存未命中时实时抓取，<b>Node 侧无兜底</b>，缺 Python 即失败</td></tr>
+          <tr><td class="mono">豆瓣代理 / suggest</td><td class="muted small">搜索始终走网络</td></tr>
+          <tr><td class="mono">LiteLLM 网关</td><td class="muted small">LLM 双通道：优先 LiteLLM，未配置则回退 DeepSeek SDK</td></tr>
+          <tr><td class="mono">Exa</td><td class="muted small">联网搜索，单次对话上限 5 次</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════ F ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">F</span><h2>为什么"看不清楚它在跑"：一半的能力没有接线</h2></div>
+  <div class="warn" style="margin-bottom:12px">
+    <p class="small" style="margin:0"><b>21 个 AI 端点里，界面上真正在用的只有 12 个。</b>其中 5 个"数据类"（反馈 2 + 会话 3）本轮才接上；剩下 <b>9 个生成类端点完全没有调用方</b>——它们不出现在任何按钮背后，所以你永远看不到它们跑。</p>
+  </div>
+  <div class="grid g2">
+    <div class="card">
+      <h3><span class="tag t-db">已接线</span> 12 个</h3>
+      <table>
+        <tbody>
+          <tr><td class="mono">/recommend/stream</td><td class="tiny muted">AIAdvisor（主入口）</td></tr>
+          <tr><td class="mono">/insight/stream</td><td class="tiny muted">BookDetail 的 AI 解读</td></tr>
+          <tr><td class="mono">/book-qa/stream</td><td class="tiny muted">BookQA（书内问答）</td></tr>
+          <tr><td class="mono">/chat/stream</td><td class="tiny muted">ReadingAssistant（统计页悬浮管家）</td></tr>
+          <tr><td class="mono">/profile/stream</td><td class="tiny muted">设置页「AI 分析我的阅读结构」<b>（本轮才接）</b></td></tr>
+          <tr><td class="mono">/classify</td><td class="tiny muted">导入向导的 AI 分类补全</td></tr>
+          <tr><td class="mono">/reorganize</td><td class="tiny muted">设置页「AI 智能整理」</td></tr>
+          <tr><td class="mono">POST/GET /recommend-feedback</td><td class="tiny muted">卡片上的「想读 / 跳过」</td></tr>
+          <tr><td class="mono">GET/PUT/DELETE /conversation</td><td class="tiny muted">AI 顾问会话记忆<b>（本轮才接）</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3><span class="tag t-gate">未接线</span> 9 个（全是生成类）</h3>
+      <table>
+        <tbody>
+          <tr><td class="mono">/reading-path/stream</td><td class="tiny muted">阅读路径规划（两个版本都没人调）</td></tr>
+          <tr><td class="mono">/reading-insights/stream</td><td class="tiny muted">阅读洞察</td></tr>
+          <tr><td class="mono">/compare-books/stream</td><td class="tiny muted">书籍对比</td></tr>
+          <tr><td class="mono">/reading-summary/stream</td><td class="tiny muted">读书总结</td></tr>
+          <tr><td class="mono">/notes/stream</td><td class="tiny muted">笔记整理</td></tr>
+          <tr><td class="mono">/recommend</td><td class="tiny muted">非流式推荐（与 /stream 重叠）</td></tr>
+          <tr><td class="mono">/insight</td><td class="tiny muted">非流式解读（与 /stream 重叠）</td></tr>
+          <tr><td class="mono">/reading-path</td><td class="tiny muted">非流式路径</td></tr>
+          <tr><td class="mono">/category-advice</td><td class="tiny muted">连客户端方法都没有</td></tr>
+        </tbody>
+      </table>
+      <p class="tiny muted" style="margin-top:8px">另有一批 hooks（<code>useAIRequest</code> / <code>useAIStreaming</code> / <code>useDebounce</code>）全仓无调用方。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════ G ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">G</span><h2>能力边界：它现在<b>不能</b>做什么</h2></div>
+  <div class="grid g2">
+    <div class="card"><h3>⚠️ 长期记忆：结构化那半已通，自由记忆还没做</h3><p class="small muted"><b>已经有</b>：会话记忆（<code>conversations</code>）+ 结构化画像（4 字段 + 来源 + 保护 + 可撤销）+ 回合后异步抽取。<br><b>还没有</b>：没有槽位的事实与约定（"我在准备考试""我不看成功学"）——设计已写在路线图 §16，等真实使用数据积累后再做；读取必须靠检索而非全量注入，否则会稀释指令。</p></div>
+    <div class="card"><h3>❌ 不记"读过哪些行为"</h3><p class="small muted">没有阅读行为流水表。热力图只能按开始/完成两个离散事件计数，做不到"每天读了多久"；"进度 0%"到底是没读还是没记录，系统分不出。</p></div>
+    <div class="card"><h3>❌ 采纳率还没有真实数字</h3><p class="small muted">分母机制（<code>shown</code>）本轮才建好，要等真实点击才有 <code>wantRate</code>。而且这些信号目前只影响排序偏好，不参与任何自动评估。</p></div>
+    <div class="card"><h3>❌ 评估还是一次性采样</h3><p class="small muted">9 条 query、每条跑一轮，噪声大到分不清"改动有效"和"模型随机"。没有人工三维评分（相关性/多样性/难度适配）。</p></div>
+    <div class="card"><h3>❌ AI 的主观判断没有回写通道</h3><p class="small muted">模型在推荐里说"《X》其实不适合你现在读"，这句话不会落到任何地方影响下次结果。评分类主观数据（分类/难度/解读）只在导入期生成一次。</p></div>
+    <div class="card"><h3>❌ 没有向量检索 / 协同过滤</h3><p class="small muted">路线图里明确列为非目标（个人书库信号量不够喂）。检索全靠 SQL LIKE + 分类过滤。</p></div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════ H ══════════════════════════════ -->
+<section>
+  <div class="sechead"><span class="n">H</span><h2>自查入口（随时可跑，零 token）</h2></div>
+  <div class="card">
+    <div class="mono-block">cd backend &amp;&amp; npm run build
+
+node inspect-context.js                      # 本次请求往模型里塞了什么（就是本页 B 段的数据来源）
+node inspect-context.js --query="我每天能读 40 分钟"   # 看闸门是否被这条 query 打开
+node check-validation.js                     # 推荐输出清洗：幻觉 bookId 修复/丢弃、站外去重（6 项）
+node check-profile-provenance.js             # 画像来源、覆盖保护、改动日志与撤销（27 项）
+
+node eval-advisor.js --run --tag=after --model=step-3.7-flash   # 真实模型评估（计费）
+node eval-advisor.js --compare=baseline,after                   # 前后对比（零成本）
+node eval-advisor.js --extract="我每天能读 40 分钟" --undo        # 验证回合后抽取与撤销（一次廉价调用）</div>
+    <p class="tiny muted" style="margin-top:10px">前三个不花钱、不联网、只读你的库快照（<code>VACUUM INTO</code> 到 <code>backend/.eval-run/</code>，已 gitignore）；后两个直连真实模型。</p>
+  </div>
+</section>
+
+<footer style="border-top:1px solid var(--line);padding-top:16px;margin-top:8px">
+  <p class="tiny muted">DeepRead · 本图数据实测于 413 本书库（EXA 联网开启）。字符数为 <code>inspect-context.js</code> 输出，
+  token 为"1 token ≈ 1.6 字符"的中文粗估，仅用于比较量级。</p>
+</footer>
+
+</div>
+</body>
+</html>

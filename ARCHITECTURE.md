@@ -2,6 +2,9 @@
 
 本文只记录"看代码看不出来"的内容：系统全景、模块边界、关键数据链路与已知取舍。函数级细节请直接读源码。
 
+> 想要一张跟着流程走的图（一次请求的 9 步、提示词逐段成本、闸门、能力边界、未接线的端点）：打开 [`docs/agent-map.html`](docs/agent-map.html)。
+> 想随时自查"这次请求往模型里塞了什么"：`cd backend && node inspect-context.js`（零 token，与线上共用 `buildAdvisorPrompt()`）。
+
 ## 1. 系统全景
 
 ```mermaid
@@ -46,7 +49,7 @@ graph TD
 **书籍导入**：`IngestionWizard` → `GET /api/douban/search` 搜豆瓣候选 → 用户选定版本（不自动选）→ `POST /api/ai/classify` AI 补全分类/难度 → 批量保存。
 
 **AI 流式调用（Agent 两阶段）**：`POST /api/ai/*/stream` → 路由先 `createAgentContext(req.user!.id)` 从 SQLite 载入该用户的书库与画像 → `aiService.callAgentStream({ systemPrompt, userPrompt, ctx, handlers, ... })`（原先 13 个位置参数已收敛成这一个 options 对象）：
-1. **思考阶段**（静默、非流式）：多轮工具调用循环，模型通过 `libraryTools` 查询书库（`search_library`、`get_book_details`、`get_reading_taste_profile`、`update_book_status`、`update_user_profile` 等 10 个工具），最多 3 轮（`MAX_ROUNDS` 硬编码在 `callAgentStream` 内）后截断。推荐端点额外带 `requireLibraryTool`：模型声称给出了 `libraryMatches` 却一次书目工具都没调，就追加一条纠正消息补 1 轮强制查证（上限 1 轮，不影响其它端点）；
+1. **思考阶段**（静默、非流式）：多轮工具调用循环，模型通过 `libraryTools` 查询书库（`search_library`、`get_book_details`、`get_reading_taste_profile`、`update_book_status`、`update_user_profile` 等 10 个工具），最多 4 轮（`MAX_ROUNDS` 硬编码在 `callAgentStream` 内）后截断。**4 而不是 3**：101 本以上概览不再注入完整书名，模型必须先查工具才能给出真实 bookId，实测 413 本库上"从书架挑三本"恰好用满 3 轮——第 3 轮既是查询轮又是收敛轮，再触发硬闸门就没有余量了。推荐端点额外带 `requireLibraryTool`：模型声称给出了 `libraryMatches` 却一次书目工具都没调，就追加一条纠正消息补 1 轮强制查证（上限 1 轮，不影响其它端点）；
 2. **表达阶段**（流式）：基于工具收集的上下文，SSE 推送给用户。
 
 SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
@@ -61,7 +64,19 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 - **非流式端点仍可自带书库**：`/classify`、`/recommend` 等只走 `callAI`、不带工具循环、改不了库，客户端传来的 `library` 在那里是无害的请求数据，未纳入上述契约。
 - **推荐结果在回传前对齐真实书库**：`recommendValidation.validateAdvisorJson` 逐条核对 `libraryMatches` 的 `bookId`，对不上就用模型同时给出的 `title` 反查修复，修不掉才丢弃，并把 `kept / repaired / dropped / droppedTitles` 塞进响应的 `matchValidation`。这一步有效的前提是**客户端渲染的是 `done` 里那份返回值而不是 chunk 原文**；提示词因此强制要求每条 `libraryMatches` 带 `title`，少这个字段就无从自愈。`externalMatches` 是站外新书、天然没有 bookId，不清洗。
 - **画像写入只有一个函数**：`updateUserProfileInDb` 只写 `!== undefined` 的字段，REST `PUT /api/profile` 与 Agent 的 `update_user_profile` 共用它，所以调用方必须只发自己要改的字段。整份旧快照 PUT 回去会把 AI 刚写进去的字段按旧值冲掉——设置页表单因此改成"只发自己拥有的 4 个字段 + 进页时重新 `fetchProfile`"。
-- **采纳反馈只有显式点击**：`POST/GET /api/ai/recommend-feedback` 写读 `recommendation_feedback`（想读 / 跳过）。同一本书改选是**追加新行**、最新一条即最终态度，不做 UPSERT。注意它没记"展示了哪些"，所以还算不出严格采纳率（缺分母）。
+- **画像字段带来源，AI 的推测不得覆盖用户的期望**（`profile_field_meta` 表，逐字段一行；加新表不受"无迁移系统"限制）：
+  - `source: 'user'` —— 用户在设置页填的（`via: 'form'`）或用户在对话里明确说的（`via: 'conversation'`，`evidence` 存原话片段）。**这是用户的期望：可能不够细、不够准，但它是权威**。`updateUserProfileInDb` 在 `source: 'ai'` 时对这些字段一律拒绝，命中的进 `refused` 原样回给模型，让它如实说"这条是你自己定的，我改不了"，而不是静默失败或反复重写。
+  - `source: 'ai'` —— AI 从对话里记录/推断的，只能填空白字段或改自己之前写的字段，且 `evidence`（用户原话）必填，会随字段一起展示给用户。
+  - 同值写入按来源分别处理：**来源不变则完全跳过**（不刷 `updated_at`——它驱动"画像是否过时"，也不让后一次的重复上报覆盖先前依据）；**同值但来源从 `ai` 升级为 `user`**（用户把 AI 记的字段在设置页原样保存）则照写，那是"用户确认过"，升级后即受保护。
+  - 注入时（`buildProfileBlock`）分四档渲染：**用户自己定的**（不要覆盖）／**AI 记录推断的**（是推测，可修正）／**数据库默认值**（有值却无来源记录，如注册时写的 `beginner`，明确标注"用户从未确认过"）／**尚未设置**（可以问）。`get_user_profile` 工具同样按 `userStated` / `aiRecorded` / `unset` 分组返回，模型无法把两类混着看。
+- **画像落盘有两条路径，且都不依赖模型自觉**：
+  1. **对话中**（工具路径）：`hasStableProfileStatement()` 从用户消息里识别"我的水平/我的目标是/我每天能读 40 分钟/我偏好…"这类自述，命中才给 `callAgentStream` 传 `requireProfileWrite`；模型一轮下来一次 `update_user_profile` 都没调就追加 1 轮纠正（落盘指令同时压到用户提示词尾部，理由同模式闸门：写在 370 行系统提示第 35 行会被稀释——**实测 27 次真实请求里模型写库 0 次**）。判据是"尝试"而非"成功"：写入被拒（用户自己填过）也是合法结果。
+  2. **回合后异步**（`POST /api/ai/profile/extract`）：顾问回答完，前端再单独问一次"用户这句话里有没有稳定的画像信息"。两道零成本闸门先挡（顾问本轮已落盘 → 跳过；未命中自述正则 → 跳过），命中才花一次廉价调用。**这条路一律记为 `source: 'ai'`**——它没被用户要求过，因此覆盖不了用户自己定的字段。两条路共用 `normalizeProfilePatch()` 做字段校验（各写一份必然漂移）。
+- **画像写入可撤销**：追加式 `profile_write_log` 记下每次写入的 `prev_value`/`next_value`/`prev_source`/`origin`（form|conversation|tool|extract），撤销即精确还原。两个边界：`reading_level` 是 NOT NULL，撤销回到默认值并删来源行；写入前无来源行时撤销要**删除**来源行而不是写空值（否则该字段会被误判成"AI 记录过"）。对话里弹提示条、设置页有完整历史与逐条撤销。
+- **采纳反馈只有显式点击 + 服务端展示记录**：`POST/GET /api/ai/recommend-feedback` 读写 `recommendation_feedback`（想读 / 跳过）。同一本书改选是**追加新行**、最新一条即最终态度，不做 UPSERT。`requestId` 由**服务端**在 `/recommend/stream` 里生成、随 `done` 回传，并在同一处写入 `action='shown'` 的展示记录——于是采纳率终于有分母（`GET /recommend-feedback` 的 `stats.wantRate`）。这些信号由 `createAgentContext` 读成 `ctx.feedbackSummary` 注入【采纳反馈】段，**反馈因此真的影响下一次推荐**。
+- **评分是两套量纲，禁止混算**：`books.douban_data.rating_score` / `Book.doubanRating` 是豆瓣 10 分制的大众评分（客观数据）；用户自评 1–5 星存在 `books.user_data.userRating`（JSON，无列因此无需迁移）。取值必须走 `libraryStats` 的 `resolveDoubanRating` / `resolveUserRating`——**历史数据里 `books.rating` 混着两套**（导入期写过豆瓣分：实测 395 条中 393 条 >5、均值 8.43），两个函数按量纲分流，`>5` 一律归豆瓣。把它当"用户评价倾向"算过的后果是模型被告知"这个用户评价偏高、比较宽容"，而真人只亲手评过 2 本。
+- **画像只有"真的被设置过"才注入**：`user_profiles.reading_level` 在注册时即写入默认值 `beginner`，所以"表里有行 = 有画像"是错的。`libraryTools.isProfileConfigured` 是唯一判据，未设置时注入的是"未设置，可以问"而不是"水平: beginner"。同理，阅读品味画像在**没有任何阅读行为**（0 本读完、无进度）时明确拒绝推断阅读人格，`get_reading_gaps` 也不再把"藏书多而未读"当成积压去劝模型少推荐。
+- **对话历史落 SQLite**：`conversations` 表（一个 user+type 一条）由 `/api/ai/conversation` 的 GET/PUT/DELETE 读写，`AIAdvisor` 挂载时以服务端为准、localStorage 只作即时镜像与首屏缓存。此前该表只有 `CREATE TABLE`、全仓无写入方，历史只在浏览器里且只留 10 轮。
 
 **统计口径单一实现**：`backend/src/services/libraryStats.ts` 的 `computeLibraryStats` 同时供 `buildLibraryOverview`（发给模型的概览）和 `GET /api/profile/stats`（统计页）使用。前端不再自行聚合数字，避免页面与模型看到两套口径。
 
@@ -94,10 +109,12 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 
 - **无数据库迁移系统**：表结构只有 `CREATE TABLE IF NOT EXISTS`，给已有表加列不会生效，需手工 `ALTER TABLE` 或删除 `backend/data/deepread.db` 重建。**加新表不受此限制**：`initDatabase()` 每次启动都跑一遍，新表会自动补上（`recommendation_feedback` 就是这么上线的）。
 - **推荐质量还缺可度量的闭环**：`recommendation_feedback` 只记显式的想读 / 跳过，没记"这次一共展示了哪几本"，所以算不出严格采纳率；也没有人工打分的评估集，任何提示词改动都只能靠肉眼比对。已记录的 `matchValidation` 是这条闭环目前唯一能自动跑出来的数字。
-- **无自动化测试**：后端 devDependencies 里有 vitest 但仓库没有任何测试文件；`npm run lint` 因缺少 ESLint 配置文件无法执行。当前验证手段是 `npm run build`（前后端）+ `backend/test-*.js` 手工脚本（需服务已启动，多数直连真实 AI API 会消耗 token）。
+- **无自动化测试**：后端 devDependencies 里有 vitest 但仓库没有任何测试文件；`npm run lint` 因缺少 ESLint 配置文件无法执行。当前验证手段是 `npm run build`（前后端）+ `backend/test-*.js` 手工脚本（需服务已启动，多数直连真实 AI API 会消耗 token）。**推荐质量的唯一可比较手段是 `backend/eval-advisor.js`**（隔离运行 + 前后对比，见下）。
+- **评估台**：`backend/eval-advisor.js` + `backend/eval-queries.json` 是"改动到底有没有让推荐变好"的答案来源。它按 AGENTS 的三点隔离跑真实模型（快照库换 cwd / env 换模型 / 现签 JWT），把每条的 mode、命中数、工具序列、轮数、耗时、`matchValidation`、假信号词频落成 `backend/.eval-run/<tag>/results.json`，用 `--compare=a,b` 逐条对比。**它会真实计费，不传 `--run` 只打印用法**；`.eval-run/` 内含用户书库快照，已 gitignore。
 - **前端代码在仓库根目录**：`App.tsx`、`components/`、`services/` 等都在根目录而非 `src/`（历史原因，`src/` 仅存 `vite-env.d.ts`）。新文件遵循现有布局。
 - **构建产物单 chunk 警告**：`vite build` 产出单 JS chunk 约 579KB（>500KB 警告），未做代码分割，属已知可接受状态。
 - **没有阅读行为流水**：每日阅读热力图只能按 `startDate` / `completionDate` 两个离散事件计数（早先是按进度 `Math.random()` 模拟，已移除）。要做真正的"每天读了多久"需要新增行为表 + 打卡写入，属路线图 O5 范畴。
 - **认证 Token 存 localStorage**：实现简单但存在 XSS 暴露面，若未来做多端同步需评估改用 HttpOnly Cookie。
 - **前端构建无类型检查**：根目录 `npm run build` 仅 vite 打包；根 tsconfig 的 `npx tsc --noEmit` 长期不绿（历史积累的未使用变量告警）。前端改动的验证以构建通过 + 手工冒烟为准。
 - **历史命名**：`services/geminiService.ts`（实为后端 AI API 客户端）——名字与直觉不符，改动前先确认。
+- **`books.rating` 的历史脏数据**：新写入已不再使用该列（用户自评走 `user_data.userRating`），但 2026-09 之前导入的书里它存的是豆瓣分。读端靠量纲分流（>5 归豆瓣）兼容，**没有做数据迁移**；要彻底清理需要一次性 UPDATE（把 >5 的值置空，豆瓣分在 `douban_data.rating_score` 里另有完整副本），未做，因为无迁移系统的前提下动用户数据需要显式确认。
