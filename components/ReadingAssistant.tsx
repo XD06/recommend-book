@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Book } from '../types';
-import { readingAssistantStream, ChatMessage, ApiError } from '../services/geminiService';
+import { readingAssistantStream, ChatMessage, ApiError, runPostTurnExtraction, RememberedNote } from '../services/geminiService';
 import { useTypewriter } from '../hooks/useTypewriter';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
+import { RememberedNoteBanner } from './RememberedNoteBanner';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import {
   PaperPlaneTilt,
@@ -39,6 +40,8 @@ export const ReadingAssistant: React.FC<ReadingAssistantProps> = ({ onBookUpdate
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [lastFailedQuestion, setLastFailedQuestion] = useState<string | null>(null);
+  /** 「AI 刚记住了什么」——与 AI 顾问同一套提示条组件、同一套撤销语义 */
+  const [remembered, setRemembered] = useState<RememberedNote | null>(null);
 const typewriter = useTypewriter(2);
 const ai = useAIActivity();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -79,6 +82,10 @@ const ai = useAIActivity();
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // 借 onToolCall 事件判断模型本轮有没有自己落盘 —— 落了就不必再跑回合后抽取
+    // （跑一次就多一次模型调用，别重复做同一件事）
+    let profileToolCalled = false;
+
     const userMsg: ChatMessage = { role: 'user', content: question };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
@@ -92,7 +99,10 @@ const ai = useAIActivity();
         {
           onChunk: (chunk) => typewriter.append(chunk),
           onPhase: (phase) => ai.handlePhase(phase),
-          onToolCall: (toolName, label, round) => ai.handleToolCall(toolName, label, round),
+          onToolCall: (toolName, label, round) => {
+            if (toolName === 'update_user_profile') profileToolCalled = true;
+            ai.handleToolCall(toolName, label, round);
+          },
           onReasoning: ai.handleReasoning,
           onBookUpdate: (bookId, updates) => {
             onBookUpdate?.(bookId, updates);
@@ -105,6 +115,11 @@ const ai = useAIActivity();
       typewriter.finish();
       setMessages((prev) => [...prev, { role: 'assistant', content: reply }]);
       typewriter.reset();
+
+      // 回答已经渲染出来，再做一次不阻塞的回合后抽取（后端两道零成本闸门先挡）
+      void runPostTurnExtraction(question, profileToolCalled).then((note) => {
+        if (note) setRemembered(note);
+      });
     } catch (e: any) {
       if (e?.name === 'AbortError') {
         setMessages((prev) => prev.slice(0, -1));
@@ -288,6 +303,11 @@ generatingLabel="正在生成回复"
           </motion.div>
         )}
       </div>
+
+      {/* AI 刚记住的东西（画像字段 + 长期记忆）—— 与 AI 顾问同一套提示条与撤销语义 */}
+      {remembered && (
+        <RememberedNoteBanner note={remembered} onDone={() => setRemembered(null)} />
+      )}
 
       {/* 输入栏 */}
       <div className="border-t border-zinc-100 pt-3 flex items-end gap-2">
