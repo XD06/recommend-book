@@ -55,8 +55,11 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, onSelectBook }) => 
     finished: serverStats?.totals.finished ?? 0,
     totalPagesRead: serverStats?.pages.read ?? 0,
     levels: serverStats?.levels ?? { [BookLevel.BASIC]: 0, [BookLevel.ADVANCED]: 0, [BookLevel.EXPERT]: 0 },
-    avgRating: serverStats?.rating.avg ?? 0,
-    ratedCount: serverStats?.rating.count ?? 0,
+    // 豆瓣分（10 分制，随书目导入）与用户自评（1–5 星）分开，不再合成一个"平均分"
+    avgRating: serverStats?.doubanRating.avg ?? 0,
+    ratedCount: serverStats?.doubanRating.count ?? 0,
+    myRatingAvg: serverStats?.userRating.avg ?? 0,
+    myRatingCount: serverStats?.userRating.count ?? 0,
   };
   const byCategory = serverStats?.byCategory ?? [];
 
@@ -226,10 +229,11 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, onSelectBook }) => 
             </div>
           </Card>
 
-          {/* Rating Stats */}
+          {/* Rating Stats — 豆瓣分是 10 分制的大众评分，不是用户自己打的分，
+              所以按 /2 折算星级展示，并明确标注口径 */}
           {stats.ratedCount > 0 && (
             <Card>
-              <CardHeader title="评分统计" icon={<Star className="w-5 h-5 text-accent-600" />} />
+              <CardHeader title="豆瓣评分" icon={<Star className="w-5 h-5 text-accent-600" />} />
               <div className="flex items-center gap-4">
                 <div className="text-4xl font-bold text-zinc-900 font-mono">
                   {stats.avgRating.toFixed(1)}
@@ -239,14 +243,19 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, onSelectBook }) => 
                     {[1, 2, 3, 4, 5].map((star) => (
                       <Star
                         key={star}
-                        weight={star <= Math.round(stats.avgRating) ? 'fill' : 'regular'}
+                        weight={star <= Math.round(stats.avgRating / 2) ? 'fill' : 'regular'}
                         className="w-4 h-4"
                       />
                     ))}
                   </div>
                   <p className="text-xs text-zinc-500 mt-1">
-                    基于 {stats.ratedCount} 本书的评分
+                    豆瓣均分（10 分制）· 基于 {stats.ratedCount} 本已收录豆瓣评分的书
                   </p>
+                  {myRatingCount > 0 && (
+                    <p className="text-xs text-indigo-600 mt-0.5">
+                      你亲手评分过 {myRatingCount} 本，平均 {myRatingAvg.toFixed(1)} 星
+                    </p>
+                  )}
                 </div>
               </div>
             </Card>

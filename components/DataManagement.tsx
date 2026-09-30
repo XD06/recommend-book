@@ -13,7 +13,9 @@ import {
 } from '@phosphor-icons/react';
 import { Card, CardHeader, CardContent, CardFooter } from './Card';
 import { Button } from './Button';
-import { ReadingLevel, UserProfile } from '../types';
+import { Book, BookStatus, ReadingLevel, UserProfile } from '../types';
+import { analyzeUserProfileStream, fetchProfileWriteLog, undoProfileWrite, ProfileWriteLogItem } from '../services/geminiService';
+import { fetchLibraryStats } from '../services/bookService';
 
 interface DataManagementProps {
   onExport: () => void;
@@ -29,6 +31,10 @@ interface DataManagementProps {
   userProfile?: UserProfile | null;
   availableCategories?: string[];
   onSaveProfile?: (profile: UserProfile) => Promise<void> | void;
+  /** 供"AI 分析阅读结构"构建请求载荷（只用它在读/已读完的名单，统计数字仍取后端） */
+  books?: Book[];
+  /** AI 分析已写回服务端后调用，让上层重新拉画像 */
+  onRefreshProfile?: () => Promise<any> | void;
 }
 
 const LEVEL_OPTIONS: Array<{ value: ReadingLevel; label: string; hint: string }> = [
@@ -37,6 +43,22 @@ const LEVEL_OPTIONS: Array<{ value: ReadingLevel; label: string; hint: string }>
   { value: 'advanced', label: '高阶', hint: '能啃原著、论文与体系化专著' },
   { value: 'expert', label: '专家', hint: '需要前沿、硬核的内容' },
 ];
+
+/** 画像字段的中文名，用于"这些信息从哪来"的逐字段来源展示 */
+const PROFILE_FIELD_LABELS: Record<string, string> = {
+  readingLevel: '阅读水平',
+  readingGoal: '阅读目标',
+  preferredCategories: '偏好分类',
+  dailyReadingTime: '每日阅读时间',
+  nickname: '称呼',
+};
+
+/** 画像取值的展示形式（数组按顿号连、分钟带单位） */
+const formatValue = (v: any): string => {
+  if (Array.isArray(v)) return v.join('、');
+  if (typeof v === 'number') return `${v} 分钟`;
+  return String(v ?? '');
+};
 
 export const DataManagement: React.FC<DataManagementProps> = ({
   onExport,
@@ -48,6 +70,8 @@ export const DataManagement: React.FC<DataManagementProps> = ({
   userProfile,
   availableCategories = [],
   onSaveProfile,
+  books = [],
+  onRefreshProfile,
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const [level, setLevel] = useState<ReadingLevel>(userProfile?.readingLevel ?? 'beginner');
@@ -55,6 +79,32 @@ export const DataManagement: React.FC<DataManagementProps> = ({
   const [minutes, setMinutes] = useState(userProfile?.dailyReadingTime ?? 30);
   const [preferred, setPreferred] = useState<string[]>(userProfile?.preferredCategories ?? []);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  /** 画像改动历史（可撤销）—— 追加式日志，包含"谁改的、依据什么、改之前是什么" */
+  const [profileLog, setProfileLog] = useState<ProfileWriteLogItem[]>([]);
+  const [undoingId, setUndoingId] = useState<number | null>(null);
+
+  const loadProfileLog = React.useCallback(async () => {
+    try {
+      setProfileLog(await fetchProfileWriteLog(20));
+    } catch {
+      // 拉不到就不显示这一块，不打扰用户
+    }
+  }, []);
+
+  useEffect(() => { void loadProfileLog(); }, [loadProfileLog, userProfile?.updatedAt]);
+
+  const handleUndoWrite = async (logId: number) => {
+    setUndoingId(logId);
+    try {
+      await undoProfileWrite(logId);
+      await onRefreshProfile?.();
+      await loadProfileLog();
+    } finally {
+      setUndoingId(null);
+    }
+  };
 
   // 画像异步加载完成后填充表单，避免首帧显示默认值
   useEffect(() => {
@@ -84,6 +134,55 @@ export const DataManagement: React.FC<DataManagementProps> = ({
       });
     } finally {
       setSavingProfile(false);
+    }
+  };
+
+  /**
+   * 让 AI 分析阅读结构，写回 user_profiles.ai_analysis。
+   *
+   * 这个能力此前是"两头都有、中间断的"：端点 `/api/ai/profile/stream` 与
+   * 下方的展示位都在，但前端零调用、后端也不写回，于是真实数据里 ai_analysis
+   * 恒为 NULL，注入给模型的画像永远少"盲区 / 建议方向"这两行——恰恰是最能
+   * 改变推荐口吻的两行。
+   *
+   * 统计数字仍取后端 `fetchLibraryStats()`（统计口径只有一份实现），
+   * books 只用来提供在读/已读完的名单。
+   */
+  const handleAnalyzeProfile = async () => {
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      const s = await fetchLibraryStats();
+      await analyzeUserProfileStream({
+        totalBooks: s.totals.total,
+        readingCount: s.totals.reading,
+        finishedCount: s.totals.finished,
+        unreadCount: s.totals.unread,
+        totalPagesRead: s.pages.read,
+        categoryDistribution: s.byCategory.map(c => ({ category: c.name, count: c.total })),
+        levelDistribution: s.levels,
+        readingBooks: books
+          .filter(b => b.status === BookStatus.READING)
+          .map(b => ({
+            title: b.title, author: b.author,
+            progress: b.userData?.progressPercentage ?? 0,
+            category: b.category, level: b.level,
+          })),
+        finishedBooks: books
+          .filter(b => b.status === BookStatus.FINISHED)
+          .map(b => ({ title: b.title, author: b.author, category: b.category, level: b.level })),
+        currentProfile: {
+          readingLevel: level,
+          readingGoal: goal.trim() || undefined,
+          preferredCategories: preferred,
+        },
+      }, {});
+      // 后端已在 /profile/stream 里写回 ai_analysis，这里只需把新画像拉回来
+      await onRefreshProfile?.();
+    } catch (e: any) {
+      setAnalyzeError(e?.message || '分析失败，请稍后重试');
+    } finally {
+      setAnalyzing(false);
     }
   };
 
@@ -159,7 +258,7 @@ export const DataManagement: React.FC<DataManagementProps> = ({
           <Card>
             <CardHeader
               title="阅读画像"
-              subtitle="AI 顾问每次推荐都会读取这份画像；不填写则推荐以无个性化模式运行"
+              subtitle="AI 顾问每次推荐都会读取这份画像。你在这里保存过的字段属于你的期望，AI 只能沿用、不会覆盖（想改直接在这里改）"
               icon={<UserCircle className="w-5 h-5 text-accent-600" />}
             />
             <CardContent className="space-y-4">
@@ -246,11 +345,95 @@ export const DataManagement: React.FC<DataManagementProps> = ({
                 )}
               </div>
 
+              {analyzeError && (
+                <div className="flex items-start gap-2 p-3 bg-rose-50 rounded-lg border border-rose-100">
+                  <Warning className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                  <p className="text-xs text-rose-700">{analyzeError}</p>
+                </div>
+              )}
+
+              {/* 信息从哪来 —— 用户自己定的（AI 不会覆盖）与 AI 记录/推断的必须让人一眼分清 */}
+              {userProfile?.fieldMeta && Object.keys(userProfile.fieldMeta).length > 0 && (
+                <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-100 space-y-1.5">
+                  <p className="text-xs font-medium text-zinc-700">这些信息从哪来</p>
+                  <ul className="space-y-1">
+                    {Object.entries(userProfile.fieldMeta).map(([field, meta]) => (
+                      <li key={field} className="text-xs text-zinc-600 leading-relaxed">
+                        <span className="text-zinc-500">{PROFILE_FIELD_LABELS[field] || field}：</span>
+                        {meta.source === 'user' ? (
+                          <span className="text-emerald-700">
+                            {meta.via === 'conversation' ? '你在对话中说的' : '你自己填写的'}
+                            <span className="text-zinc-400">（AI 不会覆盖）</span>
+                            {meta.evidence && <span className="text-zinc-400"> · 原话“{meta.evidence}”</span>}
+                          </span>
+                        ) : (
+                          <span className="text-amber-700">
+                            AI 记录的（可能是推测，可被修正）
+                            {meta.evidence && <span className="text-zinc-400"> · 依据“{meta.evidence}”</span>}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    你自己填或亲口说过的，AI 只能沿用、不能改写；AI 记录的只填空白字段。
+                  </p>
+                </div>
+              )}
+
+              {/* 画像改动历史 —— 追加式日志，提供"事后可查 + 可撤销"。
+                  这是"AI 自己记东西"能被接受的前提：错误的记忆必须能收回来。 */}
+              {profileLog.length > 0 && (
+                <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-100 space-y-1.5">
+                  <p className="text-xs font-medium text-zinc-700">画像改动历史</p>
+                  <ul className="space-y-1.5">
+                    {profileLog.map((log) => (
+                      <li key={log.id} className="flex items-start gap-2 text-xs leading-relaxed">
+                        <span className={[
+                          'mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                          log.source === 'user' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700',
+                        ].join(' ')}>
+                          {log.source === 'user' ? '你' : 'AI'}
+                        </span>
+                        <span className="min-w-0 flex-1 text-zinc-600">
+                          <span className="text-zinc-500">{PROFILE_FIELD_LABELS[log.field] || log.field}</span>
+                          {' '}
+                          {log.prevValue !== null && log.prevValue !== undefined
+                            ? <><span className="text-zinc-400 line-through">{formatValue(log.prevValue)}</span>{' → '}</>
+                            : <span className="text-zinc-400">（原本没有）{'→ '}</span>}
+                          <span className="font-medium text-zinc-800">{formatValue(log.nextValue)}</span>
+                          {log.evidence && <span className="text-zinc-400"> · 依据“{log.evidence}”</span>}
+                          <span className="text-zinc-300"> · {new Date(log.createdAt).toLocaleString()}</span>
+                        </span>
+                        {log.undoneAt ? (
+                          <span className="shrink-0 text-[10px] text-zinc-400">已撤销</span>
+                        ) : (
+                          <button
+                            onClick={() => handleUndoWrite(log.id)}
+                            disabled={undoingId === log.id}
+                            className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent-700 hover:bg-accent-50 disabled:opacity-50"
+                          >
+                            {undoingId === log.id ? '撤销中…' : '撤销'}
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {userProfile?.aiAnalysis && (
                 <div className="flex items-start gap-3 p-3 bg-zinc-50 rounded-lg border border-zinc-100">
                   <Info className="w-4 h-4 text-zinc-500 shrink-0 mt-0.5" />
                   <div className="text-xs text-zinc-600 space-y-1">
-                    <p className="font-medium text-zinc-700">AI 分析（自动生成，手改会被覆盖）</p>
+                    <p className="font-medium text-zinc-700">
+                      AI 分析（自动生成，手改会被覆盖）
+                      {userProfile.aiAnalysis.lastUpdated && (
+                        <span className="text-zinc-400 font-normal">
+                          {' '}· {new Date(userProfile.aiAnalysis.lastUpdated).toLocaleDateString()}
+                        </span>
+                      )}
+                    </p>
                     <p>{userProfile.aiAnalysis.readingPattern}</p>
                     {userProfile.aiAnalysis.blindSpots.length > 0 && (
                       <p>盲区：{userProfile.aiAnalysis.blindSpots.join('、')}</p>
@@ -261,13 +444,23 @@ export const DataManagement: React.FC<DataManagementProps> = ({
               )}
             </CardContent>
             <CardFooter>
-              <Button
-                onClick={handleSaveProfile}
-                isLoading={savingProfile}
-                leftIcon={<FloppyDisk className="w-4 h-4" />}
-              >
-                保存画像
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  onClick={handleSaveProfile}
+                  isLoading={savingProfile}
+                  leftIcon={<FloppyDisk className="w-4 h-4" />}
+                >
+                  保存画像
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={handleAnalyzeProfile}
+                  isLoading={analyzing}
+                  leftIcon={<ArrowClockwise className="w-4 h-4" />}
+                >
+                  {analyzing ? '分析中…' : 'AI 分析我的阅读结构'}
+                </Button>
+              </div>
             </CardFooter>
           </Card>
         </motion.div>

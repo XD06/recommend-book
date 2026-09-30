@@ -85,7 +85,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         case 'author':
           return a.author.localeCompare(b.author, 'zh-CN');
         case 'rating':
-          return (b.rating || 0) - (a.rating || 0);
+          // 按豆瓣分排序（10 分制）。book.rating 语义已改为用户自评，混着比会乱
+          return (b.doubanRating || 0) - (a.doubanRating || 0);
         case 'progress':
           return (b.userData?.progressPercentage || 0) - (a.userData?.progressPercentage || 0);
         case 'recent':

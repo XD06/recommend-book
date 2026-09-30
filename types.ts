@@ -30,6 +30,8 @@ export interface UserProgress {
   progressPercentage: number;
   startDate?: string;
   completionDate?: string;
+  /** 用户自评 1–5 星。存储位置就是这个对象（后端 books.user_data） */
+  userRating?: number;
 }
 
 // ============================================================================
@@ -110,8 +112,10 @@ export interface Book {
   aiInsight?: AIInsight;
   coverColor?: string;
   coverUrl?: string;  // 代理格式的封面 URL
-  rating?: number;
-  doubanRating?: number;
+  // 评分：两套量纲，别混用（豆瓣 10 分制 vs 用户自评 1–5 星）
+  rating?: number;         // 历史遗留：导入期存过豆瓣分（>5 即豆瓣量纲），新数据不写这里
+  userRating?: number;     // 用户自评 1–5 星，权威存储是 userData.userRating
+  doubanRating?: number;   // 豆瓣评分（10 分制）
   // 豆瓣数据
   doubanId?: string;
   doubanData?: DoubanBookData;
@@ -144,12 +148,28 @@ export interface ReadingPathResponse {
 
 export type ReadingLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
 
+/** 画像字段来源：user = 用户自己定的（权威，AI 不得覆盖）；ai = AI 记录/推断的（可修正） */
+export type ProfileFieldSource = 'user' | 'ai';
+
+export interface ProfileFieldMeta {
+  source: ProfileFieldSource;
+  /** 来源渠道：设置页表单 / 对话中明确陈述 */
+  via?: 'form' | 'conversation';
+  /** 写入依据（用户原话片段），AI 记录时必填 */
+  evidence?: string;
+  updatedAt?: string;
+}
+
 export interface UserProfile {
   nickname?: string;
   readingLevel: ReadingLevel;
   readingGoal?: string;
   preferredCategories: string[];
   dailyReadingTime?: number;
+  /** 画像最后更新时间；注入给模型的提示词用它标注画像是否过期 */
+  updatedAt?: string;
+  /** 逐字段来源元数据（由后端 loadUserProfile 带出） */
+  fieldMeta?: Record<string, ProfileFieldMeta>;
   aiAnalysis?: {
     inferredLevel: ReadingLevel;
     readingPattern: string;
@@ -204,6 +224,8 @@ kept: number;
 repaired: number;
 dropped: number;
 droppedTitles: string[];
+/** 与书库同名的站外推荐（提示词禁止），已被服务端剔除 */
+externalDuplicates?: string[];
 };
 }
 

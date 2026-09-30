@@ -94,7 +94,10 @@ export interface LibraryStatsResponse {
   totals: { total: number; reading: number; finished: number; unread: number };
   pages: { read: number; planned: number };
   levels: Record<BookLevel, number>;
-  rating: { count: number; avg: number };
+  /** 豆瓣评分（10 分制） */
+  doubanRating: { count: number; avg: number };
+  /** 用户自评（1–5 星） */
+  userRating: { count: number; avg: number };
   /** 后端已按藏书数降序排好 */
   byCategory: LibraryCategoryStat[];
 }

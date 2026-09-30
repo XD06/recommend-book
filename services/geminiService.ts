@@ -4,7 +4,7 @@
  * 调用后端 API 进行 AI 操作
  */
 
-import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation, AdvisorResponse } from "../types";
+import { Book, BookLevel, AIInsight, ReadingPathResponse, Recommendation, AdvisorResponse, UserProfile } from "../types";
 import { API_BASE, authHeader } from "./authService";
 
 // ============================================================================
@@ -208,6 +208,141 @@ export async function sendRecommendationFeedback(
   } catch {
     return false;
   }
+}
+
+// ============================================================================
+// 对话历史持久化 — 会话记忆落 SQLite
+//
+// 此前历史只存在 localStorage、还只留最后 10 轮：换设备或清缓存就归零，
+// 提示词里"记住用户说过的信息、下次围绕这个目标"其实无从谈起。
+// 后端 conversations 表早就建好（含索引），这里补上前端读写口。
+// ============================================================================
+
+export type ConversationType = 'ai_advisor' | 'reading_assistant' | 'book_qa';
+
+export interface StoredConversation {
+  id: string;
+  bookId: string | null;
+  type: string;
+  /** 内容形状由调用方决定（AI 顾问存的是 ChatTurn[]，不是扁平的 role/content） */
+  messages: any[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function fetchConversation(
+  type: ConversationType = 'ai_advisor',
+  bookId?: string,
+): Promise<StoredConversation | null> {
+  const qs = new URLSearchParams({ type });
+  if (bookId) qs.set('bookId', bookId);
+  const res = await fetch(`${API_BASE}/ai/conversation?${qs.toString()}`, { headers: authHeader() });
+  if (!res.ok) throw new Error('获取对话历史失败');
+  const data = await res.json();
+  return data?.data ?? null;
+}
+
+/** 保存会话。返回 false 而不抛错：写失败不该打断对话，本地那份镜像还在 */
+export async function saveConversation(
+  messages: any[],
+  type: ConversationType = 'ai_advisor',
+  bookId?: string,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/ai/conversation`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ type, bookId: bookId ?? null, messages }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function clearConversationOnServer(
+  type: ConversationType = 'ai_advisor',
+  bookId?: string,
+): Promise<boolean> {
+  try {
+    const qs = new URLSearchParams({ type });
+    if (bookId) qs.set('bookId', bookId);
+    const res = await fetch(`${API_BASE}/ai/conversation?${qs.toString()}`, {
+      method: 'DELETE',
+      headers: authHeader(),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
+// 回合后的画像抽取与撤销
+//
+// 顾问回答完再单独问一次"用户这句话里有没有稳定的画像信息"，写进 user_profiles。
+// 不依赖模型在回答时自觉落盘（实测那条路 27 次请求 0 次调用）。后端有两道零成本
+// 闸门：顾问本轮已落盘 → 跳过；用户消息没命中自述正则 → 跳过（不花这笔调用）。
+// 异步路径一律记为 AI 来源，因此覆盖不了用户自己填的字段。
+// ============================================================================
+
+export interface ProfileExtractResult {
+  skipped: boolean;
+  reason?: string;
+  written: string[];
+  refused: Array<{ field: string; reason: string }>;
+  logged?: Array<{ field: string; logId: number }>;
+  applied?: Array<{ field: string; value: any; evidence?: string }>;
+}
+
+export async function extractProfileFromTurn(
+  userMessage: string,
+  alreadyWritten?: boolean,
+): Promise<ProfileExtractResult | null> {
+  try {
+    const res = await fetch(`${API_BASE}/ai/profile/extract`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ userMessage, alreadyWritten }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.data ?? null;
+  } catch {
+    return null;   // 抽取失败与用户无关，静默
+  }
+}
+
+export interface ProfileWriteLogItem {
+  id: number;
+  field: string;
+  prevValue: any;
+  nextValue: any;
+  source: string;
+  via: string | null;
+  evidence: string | null;
+  origin: string;
+  undoneAt: string | null;
+  createdAt: string;
+}
+
+export async function fetchProfileWriteLog(limit = 30): Promise<ProfileWriteLogItem[]> {
+  const res = await fetch(`${API_BASE}/ai/profile/log?limit=${limit}`, { headers: authHeader() });
+  if (!res.ok) throw new Error('获取画像改动历史失败');
+  const data = await res.json();
+  return data?.data ?? [];
+}
+
+/** 撤销一次画像写入，返回撤销后的完整画像 */
+export async function undoProfileWrite(logId: number): Promise<UserProfile | null> {
+  const res = await fetch(`${API_BASE}/ai/profile/undo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify({ logId }),
+  });
+  if (!res.ok) throw new Error('撤销失败');
+  const data = await res.json();
+  return data?.data?.profile ?? null;
 }
 
 /**

@@ -200,11 +200,18 @@ export const BookCard: React.FC<BookCardProps> = ({
             <div className="flex items-center gap-2 mt-2 flex-wrap">
               {/* 使用可视化难度组件 */}
               <DifficultyBadge level={book.level} size="sm" showLabel={false} />
-              {book.rating && (
+              {/* 只显示豆瓣分（10 分制）。book.rating 里可能残留导入期的豆瓣旧值，
+                  但语义已不再是"用户评分"，所以不再拿它当星级展示 */}
+              {typeof book.doubanRating === 'number' && (
                 <div className="flex items-center gap-0.5 text-amber-500">
                   <Star weight="fill" className="w-3 h-3" />
-                  <span className="text-xs font-medium">{book.rating.toFixed(1)}</span>
+                  <span className="text-xs font-medium">{book.doubanRating.toFixed(1)}</span>
                 </div>
+              )}
+              {(book.userRating ?? book.userData?.userRating) !== undefined && (
+                <span className="text-[10px] text-indigo-600 font-medium">
+                  我的 {book.userRating ?? book.userData?.userRating}★
+                </span>
               )}
             </div>
 

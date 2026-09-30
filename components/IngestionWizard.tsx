@@ -59,8 +59,11 @@ export const IngestionWizard: React.FC<IngestionWizardProps> = ({
                     coverUrl: doubanBook.cover_url 
                       ? `${import.meta.env.VITE_API_BASE || 'http://localhost:3001/api'}/douban/cover?url=${encodeURIComponent(doubanBook.cover_url)}`
                       : undefined,
-                    // 豆瓣评分
-                    rating: doubanBook.rating_score,
+                    // 豆瓣评分不写进 book.rating：那个字段的语义是用户自评 1–5 星，
+                    // 写 10 分制的豆瓣分会把两套量纲搅在一起（后端品味画像据此
+                    // 输出过"评价偏高、比较宽容"这种凭空的人格判断）。
+                    // 豆瓣分保存在 doubanData.rating_score，展示时从那里取。
+                    doubanRating: doubanBook.rating_score,
                     pubDate: doubanBook.pubdate || doubanBook.publish_year,
                     isbn: doubanBook.isbn,
                     // 保存完整的豆瓣数据

@@ -463,6 +463,8 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
                   userProfile={userProfile}
                   availableCategories={categories.map((c) => c.name)}
                   onSaveProfile={handleSaveProfile}
+                  books={books}
+                  onRefreshProfile={refreshProfile}
                 />
               )}
             </motion.div>

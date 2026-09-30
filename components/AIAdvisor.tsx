@@ -2,12 +2,25 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Book, BookStatus, AdvisorResponse, Recommendation, ReadingMood, MOOD_OPTIONS, getBookCoverUrl, hasBookCover } from '../types';
 import { Button } from './Button';
-import { getRecommendationsStream, sendRecommendationFeedback, RecommendationFeedbackItem } from '../services/geminiService';
+import { getRecommendationsStream, sendRecommendationFeedback, RecommendationFeedbackItem, fetchConversation, saveConversation, clearConversationOnServer, extractProfileFromTurn, undoProfileWrite } from '../services/geminiService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import {
   Sparkle, PaperPlaneTilt, Plus, Star, Robot, Stack, Lightbulb, Clock, Eye, CheckCircle,
-  BookOpen, Books, Coffee, Trash, BookmarkSimple, Prohibit,
+  BookOpen, Books, Coffee, Trash, BookmarkSimple, Prohibit, Info,
 } from '@phosphor-icons/react';
+
+/** 画像字段的中文名与取值展示，用于"AI 记住了…"提示条 */
+const PROFILE_FIELD_LABELS: Record<string, string> = {
+  readingLevel: '阅读水平',
+  readingGoal: '阅读目标',
+  preferredCategories: '偏好分类',
+  dailyReadingTime: '每日阅读时间',
+};
+const formatProfileValue = (v: any): string => {
+  if (Array.isArray(v)) return v.join('、');
+  if (typeof v === 'number') return `${v} 分钟`;
+  return String(v ?? '');
+};
 
 const fallbackResponse: AdvisorResponse = {
 mode: 'conversation',
@@ -56,6 +69,8 @@ const STARTER_PROMPTS = [
 
 export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAddBook }) => {
   const storageKey = 'ai-advisor-chat';
+  /** 本地镜像保留的轮数；服务端是同一个上限，注入模型时还会再过一次 token 窗口 */
+  const MAX_LOCAL_TURNS = 20;
   const [request, setRequest] = useState('');
   const [selectedMood, setSelectedMood] = useState<ReadingMood | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,6 +86,10 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  /** "AI 刚从这轮对话里记住了什么"——当场可见、可撤销 */
+  const [profileNote, setProfileNote] = useState<{ text: string; logIds: number[]; error?: string } | null>(null);
+  const [undoingNote, setUndoingNote] = useState(false);
+
   // 切页会硬重挂载本组件（App 用 key={activeTab}），不中止就遗留一条 SSE 连接。
   // 浏览器对单域名只有 6 条 HTTP/1.1 连接，攒够之后所有接口请求都在队列里等
   // （实测一次普通 GET /profile/stats 从 15ms 变 7.5s）。
@@ -81,20 +100,48 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
   const handleClearHistory = () => {
     setHistory([]);
     localStorage.removeItem(storageKey);
+    // 服务端那份也要清，否则下次挂载又把旧对话捞回来
+    void clearConversationOnServer('ai_advisor');
   };
 
-  // 持久化对话历史到 localStorage
+  // 服务端会话恢复。
+  // conversations 表建好很久了却从无写入方，历史只躺在 localStorage 里、只留 10 轮，
+  // 换设备或清缓存即归零 —— 提示词里"下次围绕这个目标"因此是句空话。
+  // 初始渲染仍先用 localStorage（首屏不闪），拿到服务端那份后再覆盖；
+  // 服务端为空而本地有内容时，下面的保存 effect 会把本地那份补传上去（一次性迁移）。
+  const [historyHydrated, setHistoryHydrated] = useState(false);
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stored = await fetchConversation('ai_advisor');
+        if (cancelled) return;
+        const remote = Array.isArray(stored?.messages) ? (stored!.messages as ChatTurn[]) : [];
+        if (remote.length > 0) setHistory(remote);
+      } catch {
+        // 拉不到就用本地那份，不打断用户
+      } finally {
+        if (!cancelled) setHistoryHydrated(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // 持久化对话历史：localStorage 作即时镜像，SQLite 作跨设备真源
+  useEffect(() => {
+    if (!historyHydrated) return; // 服务端那份还没回来，先别把本地旧内容推上去覆盖它
+    const trimmed = history.slice(-MAX_LOCAL_TURNS);
     try {
-      if (history.length > 0) {
-        localStorage.setItem(storageKey, JSON.stringify(history.slice(-10)));
+      if (trimmed.length > 0) {
+        localStorage.setItem(storageKey, JSON.stringify(trimmed));
       } else {
         localStorage.removeItem(storageKey);
       }
     } catch {
-      // localStorage 可能已满，忽略
+      // localStorage 可能已满，忽略（服务端那份仍在）
     }
-  }, [history, storageKey]);
+    if (trimmed.length > 0) void saveConversation(trimmed, 'ai_advisor');
+  }, [history, historyHydrated, storageKey]);
 
   const handleConsult = async () => {
     if (!request.trim() && !selectedMood) return;
@@ -155,7 +202,10 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
       const finalResult: AdvisorResponse = data || fallbackResponse;
       finalResult.libraryMatches = finalResult.libraryMatches || [];
       finalResult.externalMatches = finalResult.externalMatches || [];
-      finalResult.requestId = requestId;
+      // 优先用服务端在 done 里回传的 requestId：服务端已经用它写下了"这次展示了哪些"，
+      // 只有用同一个 id，后面的想读/跳过才能和展示归到一组、算得出采纳率。
+      // 本地生成的那个仅作兜底（例如响应来自旧版后端）。
+      finalResult.requestId = (data && (data as any).requestId) || requestId;
       // 确保对话模式有 reply，推荐模式有 analysis
       if (finalResult.mode === 'conversation' && !finalResult.reply) {
         finalResult.reply = finalResult.analysis || '';
@@ -166,6 +216,11 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
       setHistory(prev => [...prev, { userRequest: currentRequest, mood: currentMood, result: finalResult }]);
       setRequest('');
       setSelectedMood(null);
+
+      // 回答已经渲染出来了，再做一次**不阻塞**的画像抽取：
+      // 顾问本轮已经自己落过盘就跳过（alreadyWritten），否则后端会先过正则闸门、
+      // 命中才真的花一次廉价 LLM 调用。放在 setHistory 之后，用户看不到这次等待。
+      void runProfileExtraction(currentRequest, !!(data && (data as any).profileWritten));
       // 重置输入框高度
       if (inputRef.current) {
         inputRef.current.style.height = '56px';
@@ -181,8 +236,37 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
     }
   };
 
-  const handleStop = () => {
-    if (abortRef.current) {
+  /**
+   * 回合后抽取：把用户这句话里稳定的画像信息落到 user_profiles。
+   * 后端会先过两道零成本闸门（顾问已落盘 / 未命中自述正则），所以这里可以放心调用。
+   */
+  const runProfileExtraction = async (userMessage: string, alreadyWritten: boolean) => {
+    const r = await extractProfileFromTurn(userMessage, alreadyWritten);
+    if (!r || r.skipped || r.written.length === 0) return;
+    const parts = (r.applied || [])
+      .map((a) => `${PROFILE_FIELD_LABELS[a.field] || a.field}：${formatProfileValue(a.value)}`)
+      .filter(Boolean);
+    setProfileNote({
+      text: parts.join('；') || r.written.join('、'),
+      logIds: (r.logged || []).map((l) => l.logId),
+    });
+  };
+
+  const handleUndoProfileNote = async () => {
+    const ids = profileNote?.logIds ?? [];
+    setUndoingNote(true);
+    try {
+      // 逐条撤销：一次抽取可能写了多个字段，每个字段一行日志
+      for (const id of ids) await undoProfileWrite(id);
+      setProfileNote(null);
+    } catch (e: any) {
+      setProfileNote((prev) => ({ text: prev?.text || '', logIds: ids, error: `撤销失败：${e?.message || '未知错误'}` }));
+    } finally {
+      setUndoingNote(false);
+    }
+  };
+
+  const handleStop = () => {    if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
@@ -320,6 +404,37 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
 
       {/* 底部输入区 — 移动端要抬到 fixed 底部导航之上，否则心境条和输入框被压住 */}
       <div className="sticky bottom-[var(--bottom-nav-h)] md:bottom-0 bg-zinc-50/80 backdrop-blur-md pt-4 pb-4 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0 border-t border-zinc-200/50">
+        {/* AI 刚从这轮对话里记下的画像 —— 必须当场可见且能一键撤销。
+            背景：让模型"顺便记住"实测 27 次请求 0 次调用，所以补了回合后异步抽取；
+            但没被要求过的后台写入，用户至少要有知情权与反悔权（设置页还有完整历史）。 */}
+        {profileNote && (
+          <div className="mb-3 flex items-start gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2">
+            <Info size={14} className="mt-0.5 shrink-0 text-indigo-500" />
+            <div className="min-w-0 flex-1 text-xs leading-relaxed text-indigo-900">
+              <span className="font-medium">AI 记住了</span>（你随时可以撤）：
+              <span className="text-indigo-800">{profileNote.text}</span>
+              {profileNote.error && <span className="ml-1 text-rose-600">{profileNote.error}</span>}
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              {profileNote.logIds.length > 0 && (
+                <button
+                  onClick={handleUndoProfileNote}
+                  disabled={undoingNote}
+                  className="rounded px-2 py-0.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+                >
+                  {undoingNote ? '撤销中…' : '撤销'}
+                </button>
+              )}
+              <button
+                onClick={() => setProfileNote(null)}
+                className="rounded px-1.5 py-0.5 text-xs text-indigo-400 hover:bg-indigo-100 hover:text-indigo-600"
+                aria-label="关闭"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
         {/* 心境选择 + 清空对话 — 窄屏单行横滑，避免两行胶囊把输入区顶得太高 */}
         <div className="flex gap-1.5 mb-3 overflow-x-auto no-scrollbar sm:flex-wrap sm:justify-center sm:overflow-visible">
           {MOOD_OPTIONS.map((mood) => (
@@ -524,6 +639,12 @@ const AdvisorResult: React.FC<{
               {result.matchValidation?.dropped} 条推荐在书库里没找到对应的书，已过滤掉
               {(result.matchValidation?.droppedTitles ?? []).filter((t) => !t.startsWith('(')).length > 0 &&
                 `：${(result.matchValidation?.droppedTitles ?? []).filter((t) => !t.startsWith('(')).join('、')}`}
+            </p>
+          )}
+          {(result.matchValidation?.externalDuplicates?.length ?? 0) > 0 && (
+            <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+              {result.matchValidation!.externalDuplicates!.length} 条站外推荐与你的书库重复，已过滤掉
+              ：{result.matchValidation!.externalDuplicates!.join('、')}
             </p>
           )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

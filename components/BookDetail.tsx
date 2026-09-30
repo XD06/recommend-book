@@ -327,12 +327,17 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-zinc-400 mb-1">评分 (1-5)</label>
+                      <label className="block text-xs text-zinc-400 mb-1">我的评分 (1-5 星)</label>
                       <select
-                        value={book.rating || ''}
+                        value={book.userRating ?? book.userData?.userRating ?? ''}
                         onChange={(e) => {
                           const val = e.target.value ? parseInt(e.target.value) : undefined;
-                          onUpdate({ ...book, rating: val }, true);
+                          // 星级与阅读进度同住 userData；写入时要带上原有进度，否则会把进度冲掉。
+                          // 不再写 book.rating —— 那个字段里躺着导入期的豆瓣分（10 分制）。
+                          const merged = { ...(book.userData || { totalPages: 0, currentPage: 0, progressPercentage: 0 }) } as any;
+                          if (val === undefined) delete merged.userRating;
+                          else merged.userRating = val;
+                          onUpdate({ ...book, userRating: val, userData: merged }, true);
                         }}
                         className="w-full px-3 py-2 text-sm bg-zinc-50 border border-zinc-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-accent-500"
                       >
@@ -368,10 +373,17 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
                     <Badge variant="default">{book.subcategory}</Badge>
                     {/* 使用可视化难度组件 */}
                     <DifficultyBadge level={book.level} size="sm" />
-                    {book.rating && (
+                    {/* 豆瓣分与我的评分分开显示：豆瓣是 10 分制的大众评分，
+                        混在一个位置展示会让人以为那是自己打的分 */}
+                    {(doubanData?.rating_score ?? (book.rating && book.rating > 5 ? book.rating : undefined)) !== undefined && (
                       <Badge variant="default" className="bg-amber-50 text-amber-700 border-amber-200">
                         <Star className="w-3 h-3 text-amber-400 mr-1" weight="fill" />
-                        {book.rating}
+                        豆瓣 {(doubanData?.rating_score ?? book.rating)!.toFixed(1)}
+                      </Badge>
+                    )}
+                    {(book.userRating ?? book.userData?.userRating) !== undefined && (
+                      <Badge variant="default" className="bg-indigo-50 text-indigo-700 border-indigo-200">
+                        我的评分 {book.userRating ?? book.userData?.userRating}★
                       </Badge>
                     )}
                     <button
