@@ -44,6 +44,7 @@ import {
   buildNoteOrganizerUserPrompt,
   READING_PATH_SYSTEM_PROMPT,
   PROFILE_ANALYSIS_SYSTEM_PROMPT,
+  PROFILE_EXTRACTOR_SYSTEM_PROMPT,
   withTools,
 } from '../prompts';
 import {
@@ -52,6 +53,7 @@ import {
   buildLibraryOverview,
   describeToolCallUnified,
   isLibraryCatalogTool,
+  isProfileConfigured,
   FULL_INDEX_LIMIT,
   BookUpdateCallback,
 } from './libraryTools';
@@ -77,7 +79,9 @@ const AI_RETRY_BASE_DELAY = parseInt(process.env.AI_RETRY_BASE_DELAY || '1000', 
 
 // 上下文窗口管理配置
 const MAX_CONVERSATION_TOKENS = parseInt(process.env.MAX_CONVERSATION_TOKENS || '12000', 10);
-const MAX_CONVERSATION_MESSAGES = parseInt(process.env.MAX_CONVERSATION_MESSAGES || '20', 10);
+// 40 条 ≈ 20 轮。此前是 20 条，而前端 localStorage 又只留 10 轮，两层都偏紧；
+// 历史现在落在 SQLite 里，值得多留一点（token 上限仍然管着实际注入量）
+const MAX_CONVERSATION_MESSAGES = parseInt(process.env.MAX_CONVERSATION_MESSAGES || '40', 10);
 
 // 初始化 OpenAI 客户端（仅用于 DeepSeek）
 const openai = new OpenAI({
@@ -568,6 +572,13 @@ export interface AgentRun {
    * "概览里的书目是否已经完整"决定开不开。
    */
   requireLibraryTool?: boolean;
+  /**
+   * 画像落盘闸门：用户消息里包含稳定的画像自述（见 hasStableProfileStatement），
+   * 而模型一次 update_user_profile 都没调时，追加一轮纠正消息。多一轮 = 多一次
+   * AI 调用，所以由调用方在"识别到自述"时才开——实测该情形下模型 0/27 次主动写库，
+   * 光靠提示词中间那句"落盘才算记住"没用。
+   */
+  requireProfileWrite?: boolean;
 }
 
 /** 非流式与流式推荐共用的请求体（不含书库/画像——那两项服务端取） */
@@ -650,6 +661,21 @@ const LIBRARY_GATE_HINT = `【系统校验】你上一条回答的 libraryMatche
 如果查完发现书库里确实没有匹配的书，就把 libraryMatches 留空、改用 externalMatches，并如实说明书库里没有。`;
 
 /**
+ * 画像落盘闸门注入的纠正消息（见 callAgentStream 内的触发条件）。
+ *
+ * 要点是**区分"用户说的"和"你推断的"**：前者写进去是用户的期望，后者只是你的猜测，
+ * 两者在画像里是不同来源、展示给用户的方式也不同。把推断标成 userStated=true
+ * 等于伪造用户的意愿，比不写更糟。
+ */
+const PROFILE_GATE_HINT = `【系统校验】用户这条消息里包含了稳定的画像信息（阅读水平 / 长期目标 / 偏好分类 / 每日可读时间），但你这一轮没有调用 update_user_profile 写入任何东西。
+对话里的记忆只在本次请求内有效，下次会话就没了——请先落盘再回答：
+1. 调用 update_user_profile，只传用户明确说过的那些字段；
+2. evidence 必填，直接引用用户原话片段；
+3. **userStated 必须如实**：用户本轮亲口说出的值传 true；你自己推断出来的传 false。传 true 会覆盖用户在设置页填过的值，那是用户的期望，只有用户明确要求改时才这么做；
+4. 如果某个字段被工具拒绝（用户自己定过），就如实告诉用户你沿用了他自己定的值、以及你的判断与它不同在哪里，不要反复重写。
+落盘后在回复里用一句话说明你记住了什么。如果你判断这些信息不值得长期保存，就在回复里说明原因，不要静默跳过。`;
+
+/**
  * Agent 流式调用 — 两阶段架构
  *
  * Phase 1（信息收集）：AI 通过 tool calls 查询书库，非流式，最多 N 轮
@@ -685,13 +711,22 @@ async function callAgentStream(run: AgentRun): Promise<string> {
   console.log('[AI] Agent Phase 1: 信息收集 (thinking)');
   onPhase?.('thinking');
 
-  const MAX_ROUNDS = 3;
+  // 轮次预算：101 本以上时书库概览不再注入完整书名（见 FULL_INDEX_LIMIT / CURATED_INDEX_LIMIT），
+  // 想推荐书架上的书就必须靠工具把书目捞出来。实测 413 本库上"从书架挑三本"恰好用满 3 轮，
+  // 于是第 3 轮既是查询轮又是收敛轮；一旦再触发书库硬闸门（requireLibraryTool）就必然没有余量，
+  // 模型只能靠猜。给到 4 轮，留一格给收敛。
+  const MAX_ROUNDS = 4;
   let maxRounds = MAX_ROUNDS;
   // 运行时获取所有可用工具（书库工具 + 条件性 Web 工具）
   const tools = getAllTools();
   // 书库硬闸门：本轮真正查过几次书目（画像类工具不计，它给不出 bookId）
   let catalogQueries = 0;
   let gateFired = false;
+  // 画像落盘闸门：本轮尝试调用 update_user_profile 的次数。
+  // 注意"尝试"而非"成功"：写入被拒绝（用户自己填过的字段）也是合法结果，
+  // 模型该做的是把冲突如实告诉用户，而不是被逼着重写。
+  let profileWrites = 0;
+  let profileGateFired = false;
 
   for (let round = 0; round < maxRounds; round++) {
     const roundStart = Date.now();
@@ -736,6 +771,7 @@ async function callAgentStream(run: AgentRun): Promise<string> {
       });
 
       catalogQueries += toolEntries.filter((e) => isLibraryCatalogTool(e.tc.function.name)).length;
+      profileWrites += toolEntries.filter((e) => e.tc.function.name === 'update_user_profile').length;
 
       // 并行执行所有工具，保证结果顺序与 tool_calls 一致
       const results = await Promise.all(
@@ -777,6 +813,15 @@ async function callAgentStream(run: AgentRun): Promise<string> {
       console.log('[AI] 书库硬闸门: 未查询书目就给出 libraryMatches，追加 1 轮强制查证');
       messages.push({ role: 'assistant', content: response.content || '' });
       messages.push({ role: 'user', content: LIBRARY_GATE_HINT });
+      continue;
+    } else if (run.requireProfileWrite && !profileGateFired && profileWrites === 0) {
+      // 用户明说了稳定画像信息，模型却一个字都没落盘——只在这一次请求里"记住"，
+      // 下次会话又归零。追加一轮强制落盘；被拒绝也算处理过（见 profileWrites 注释）。
+      profileGateFired = true;
+      maxRounds = round + 2;
+      console.log('[AI] 画像落盘闸门: 用户消息含稳定画像信息但未写库，追加 1 轮');
+      messages.push({ role: 'assistant', content: response.content || '' });
+      messages.push({ role: 'user', content: PROFILE_GATE_HINT });
       continue;
     } else {
       // AI 不再调用工具 — 信息收集阶段结束
@@ -1335,27 +1380,154 @@ export async function reorganizeLibrary(
  * 4. 引导 AI 优先使用分析型工具（品味画像、知识缺口）
  */
 /** 画像段落：推荐与阅读助手共用同一份措辞，避免两处各自漂移 */
+/**
+ * 注入用户画像。
+ *
+ * 关键：`user_profiles.reading_level` 在注册那一刻就被写成默认值 'beginner'
+ * （routes/auth.ts），所以"表里有行 = 用户设过画像"是错的。不做这一步判断，
+ * 413 本书的库会被明确告知"这个用户水平是初学者"，推荐被系统性压回入门书
+ * ——这是当下对个性化伤害最大的一条。未设置就如实说未设置，模型会去问，
+ * 那才是正确的个性化路径。
+ *
+ * 另外带上画像年龄：过期的画像比没有画像更危险，因为它看起来像事实。
+ */
+const PROFILE_STALE_DAYS = 90;
+
+const PROFILE_FIELD_LABELS: Record<string, string> = {
+  readingLevel: '阅读水平',
+  readingGoal: '阅读目标',
+  preferredCategories: '偏好分类',
+  dailyReadingTime: '每日阅读时间',
+};
+
 function buildProfileBlock(profile?: UserProfile): string {
-  if (!profile) return '';
+  if (!isProfileConfigured(profile)) {
+    return `\n\n【用户画像】未设置 —— 用户没有填过阅读水平/目标/偏好分类/每日时长，也没有 AI 分析。`
+      + `不要假设 TA 的水平（库里的默认值 beginner 不是用户说的），也不要因为缺画像就只给最保守的入门书；`
+      + `可以按书库难度分布与在读书籍推断，或在对话里自然问一句、问到后用 update_user_profile 落盘。\n`;
+  }
+
+  const p = profile!;
+  const meta = p.fieldMeta || {};
+  const userLines: string[] = [];
+  const aiLines: string[] = [];
+  const defaultLines: string[] = [];
+  const unset: string[] = [];
+
+  const entries: Array<[string, any]> = [
+    ['readingLevel', p.readingLevel],
+    ['readingGoal', p.readingGoal],
+    ['preferredCategories', p.preferredCategories?.length ? p.preferredCategories.join('、') : undefined],
+    ['dailyReadingTime', p.dailyReadingTime ? `${p.dailyReadingTime} 分钟` : undefined],
+  ];
+
+  for (const [field, value] of entries) {
+    const label = PROFILE_FIELD_LABELS[field] || field;
+    if (value === undefined || value === null || String(value).trim() === '') {
+      unset.push(label);
+      continue;
+    }
+    const m = meta[field];
+    if (!m) {
+      // 有值但没有任何写入记录 —— 只能是数据库默认值（如注册时写的 beginner）。
+      // 这是历史上"默认值冒充用户自述"的入口，单独一档说清楚。
+      defaultLines.push(`  ${label}: ${value}（数据库默认值，用户从未确认过，不要当作用户的要求）`);
+    } else if (m.source === 'user') {
+      userLines.push(`  ${label}: ${value}（${m.via === 'conversation' ? `用户在对话中明确说过，原话"${m.evidence || ''}"` : '用户自己在设置页填写'}）`);
+    } else {
+      aiLines.push(`  ${label}: ${value}（AI 记录/推断${m.evidence ? `，依据"${m.evidence}"` : ''}）`);
+    }
+  }
+
   let block = `\n\n【用户画像】\n`;
-  block += `水平: ${profile.readingLevel}\n`;
-  if (profile.readingGoal) block += `目标: ${profile.readingGoal}\n`;
-  if (profile.preferredCategories?.length) block += `偏好: ${profile.preferredCategories.join(', ')}\n`;
-  if (profile.dailyReadingTime) block += `每日阅读时间: ${profile.dailyReadingTime} 分钟\n`;
-  if (profile.aiAnalysis) {
-    block += `AI分析: ${profile.aiAnalysis.readingPattern}\n`;
-    block += `盲区: ${profile.aiAnalysis.blindSpots.join(', ')}\n`;
-    block += `建议方向: ${profile.aiAnalysis.recommendedFocus}\n`;
+  if (userLines.length) {
+    block += `■ 用户自己定下的（**权威，不要覆盖、不要否定**；只有用户明确要求改时才动，且要由用户确认新值）：\n${userLines.join('\n')}\n`;
+  }
+  if (aiLines.length) {
+    block += `■ AI 记录/推断的（**是推测，可能不准**；与用户当前说法冲突时以用户为准，可直接修正）：\n${aiLines.join('\n')}\n`;
+  }
+  if (defaultLines.length) {
+    block += `■ 默认值（不是用户说的）：\n${defaultLines.join('\n')}\n`;
+  }
+  if (unset.length) {
+    block += `■ 尚未设置：${unset.join('、')}（可以自然地问，问到后用 update_user_profile 落盘；能填空白字段和上面"AI 记录"的字段，但改不了"用户自己定下的"）\n`;
+  }
+  if (p.aiAnalysis) {
+    block += `AI分析: ${p.aiAnalysis.readingPattern}\n`;
+    block += `盲区: ${p.aiAnalysis.blindSpots.join(', ')}\n`;
+    block += `建议方向: ${p.aiAnalysis.recommendedFocus}\n`;
+  }
+  if (p.updatedAt) {
+    const days = Math.floor((Date.now() - new Date(p.updatedAt).getTime()) / 86400000);
+    if (Number.isFinite(days) && days > PROFILE_STALE_DAYS) {
+      block += `注意: 这份画像距今 ${days} 天，可能已过时；与本次对话内容冲突时以对话为准\n`;
+    }
   }
   return block;
 }
 
-export async function getRecommendationsStream(
+/**
+ * 用户这条消息里是否包含"稳定的画像信息"自述。
+ *
+ * 用途是**正向触发落盘闸门**：实测 27 次真实请求里模型调用 update_user_profile
+ * 0 次——包括用户明说"我今年的目标是…，每天能读 40 分钟"那一次。提示词里那句
+ * "落盘才算记住"写在 370 行系统提示的第 35 行，被稀释得和当年的模式判定一样。
+ * 所以改成结构强制：识别到自述就要求它先落盘再回答。
+ *
+ * 宁可少触发：这些模式都要求"我…"的自述句式，光说"想读点轻松的"不会命中，
+ * 免得每次闲聊都白烧一轮。
+ */
+const PROFILE_SIGNAL_PATTERNS: RegExp[] = [
+  /我(的)?(阅读)?(水平|基础|底子)/,
+  /我是(个)?(小白|初学者|新手|入门|零基础)/,
+  /我(已经)?算(得上)?(是)?(中级|高级|资深|老手)/,
+  /我(今年|这个?季度|这个?月|最近|接下来)?(的)?(目标|计划|打算)是/,
+  /我(每天|一天|平时|一般)(大概|大约|差不多)?(能|可以|会)?(读|看|抽出|花)\s*\d+\s*(分钟|小时|个?小时)/,
+  /我(平时|主要|一般|最)?(喜欢|偏好|爱)(读|看)/,
+];
+
+export function hasStableProfileStatement(text: string): boolean {
+  return PROFILE_SIGNAL_PATTERNS.some((re) => re.test(text || ''));
+}
+
+/**
+ * 回合结束后的画像抽取 —— 不依赖模型自觉的那条路。
+ *
+ * 为什么不放在主请求里：主请求的 Phase 1 已经花掉 3–4 轮，让模型在"回答的同时"
+ * 顺手落盘实测只有 2/2（加了尾部指令之后），更早是 0/27。把这件事拆成回答之后的
+ * 一次廉价调用（无工具、无书库概览、只有一句话），触发与成败都不再依赖主流程。
+ *
+ * 只返回候选项，**不写库**：写库统一走 `updateUserProfileInDb` 的来源保护，
+ * 由路由层用与工具路径同一份 `normalizeProfilePatch` 规范化后落盘。
+ */
+export async function extractProfileUpdates(userMessage: string): Promise<{
+  updates: Array<{ field: string; value: any; evidence?: string; userStated?: boolean }>;
+}> {
+  const content = await callAI([
+    { role: 'system', content: PROFILE_EXTRACTOR_SYSTEM_PROMPT },
+    { role: 'user', content: `用户刚说的那句话：\n"""${userMessage.slice(0, 1500)}"""` },
+  ], 0.2);
+
+  const parsed = parseAIJSON<{ updates?: any[] }>(content) as any;
+  const updates = Array.isArray(parsed?.updates) ? parsed.updates : [];
+  return {
+    updates: updates
+      .filter((u: any) => u && typeof u === 'object' && typeof u.field === 'string')
+      .slice(0, 4),
+  };
+}
+
+/**
+ * 组装"推荐"这条路径真正送给模型的两段提示词。
+ *
+ * 单独抽出来是为了**可观测**：`backend/inspect-context.js` 直接调它并逐段报字符数，
+ * 于是"这次请求到底往模型里塞了什么"不用靠读代码猜。诊断脚本与线上路径共用这个
+ * 函数，所以它报的数字不可能与真实请求漂移。
+ */
+export function buildAdvisorPrompt(
   ctx: AgentContext,
   input: RecommendInput,
-  handlers: AgentHandlers,
-): Promise<AIResponse> {
-  // 使用 withTools 统一构建工具说明（包含新增的分析型工具）
+): { systemPrompt: string; userPrompt: string } {
   const systemPrompt = withTools(
     READING_ADVISOR_SYSTEM_PROMPT,
     3,
@@ -1364,6 +1536,12 @@ export async function getRecommendationsStream(
 
   let userPrompt = buildLibraryOverview(ctx.library);
   userPrompt += buildProfileBlock(ctx.userProfile);
+
+  // 采纳反馈是"推得准不准"唯一的客观信号，此前只写不读 —— 读了它，下一次推荐
+  // 才会真的避开被跳过的、延续被想读的
+  if (ctx.feedbackSummary) {
+    userPrompt += `\n\n【采纳反馈】\n${ctx.feedbackSummary}\n`;
+  }
 
   if (input.categoryContext) {
     const cc = input.categoryContext;
@@ -1386,6 +1564,20 @@ export async function getRecommendationsStream(
   // 一句"你好"也会直接产出整份书单。把模式闸门压到最后一条，利用尾部位置。
   userPrompt += `\n\n第一步只做模式判断（见系统提示"响应模式判断"）：寒暄、闲聊、问你是谁、需求太笼统 → mode="conversation"，reply 控制在 150 字内、不给书单、不必调用工具；只有出现明确学习目标或具体阅读需求时才用 recommendation。`;
 
+  // 落盘指令和模式闸门同一个道理：写在第 35 行的"落盘才算记住"会被 370 行推荐方法论淹没
+  // （实测 27 次真实请求里模型写库 0 次，包括用户明说目标与每日时长那一次）。压到尾部。
+  userPrompt += `\n\n另外：如果用户这条消息里说出了稳定的画像信息（阅读水平、长期目标、偏好分类、每日可读时间），在回答前先调用 update_user_profile 落盘——evidence 引用用户原话，userStated 只有"用户本轮亲口说的"才传 true；如果该字段被拒（用户自己填过），如实说明你沿用了 TA 自己定的值。落盘后在回复里用一句话说明你记住了什么。`;
+
+  return { systemPrompt, userPrompt };
+}
+
+export async function getRecommendationsStream(
+  ctx: AgentContext,
+  input: RecommendInput,
+  handlers: AgentHandlers,
+): Promise<AIResponse> {
+  const { systemPrompt, userPrompt } = buildAdvisorPrompt(ctx, input);
+
   const content = await callAgentStream({
     systemPrompt,
     userPrompt,
@@ -1397,6 +1589,8 @@ export async function getRecommendationsStream(
     // 闸门只在概览不完整时启用：≤FULL_INDEX_LIMIT 本的提示词里就是全量 [id] 书名，
     // 不查工具也算有据可依；超过这个规模概览只是节选，此时凭空报出的 bookId 必然是猜的
     requireLibraryTool: ctx.library.length > FULL_INDEX_LIMIT,
+    // 用户明说了稳定画像信息就必须落盘：只在识别到自述时才开，避免每次闲聊多烧一轮
+    requireProfileWrite: hasStableProfileStatement(input.userRequest),
   });
 
   // chunk 只是原文预览，客户端真正渲染的是 done 里这份返回值，所以清洗放在这里有效：
@@ -1843,12 +2037,18 @@ export async function readingAssistantStream(
 
   let userPrompt = buildLibraryOverview(ctx.library);
   userPrompt += buildProfileBlock(ctx.userProfile);
+  if (ctx.feedbackSummary) {
+    userPrompt += `\n\n【采纳反馈】\n${ctx.feedbackSummary}\n`;
+  }
   userPrompt += `\n【用户问题】\n${input.question}`;
+  // 阅读管家同样是用户会聊到自身情况的地方，一并接上落盘要求与闸门
+  userPrompt += `\n\n如果用户这条消息里说出了稳定的画像信息（阅读水平、长期目标、偏好分类、每日可读时间），先调用 update_user_profile 落盘（evidence 引用用户原话，userStated 只在用户本轮亲口说出时传 true），再回答。`;
 
   const content = await callAgentStream({
     systemPrompt, userPrompt, ctx, handlers,
     temperature: 0.7, jsonMode: false,
     conversationHistory: input.conversationHistory,
+    requireProfileWrite: hasStableProfileStatement(input.question),
   });
   return content;
 }

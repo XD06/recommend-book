@@ -11,4 +11,5 @@ export * from './bookListGenerator';
 export * from './noteOrganizer';
 export * from './readingPath';
 export * from './profileAnalysis';
+export * from './profileExtractor';
 export * from './_shared';

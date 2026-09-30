@@ -83,16 +83,23 @@ export function claimsLibraryMatches(raw: string): boolean {
 
 /**
  * 校验并清洗模型返回的推荐 JSON。
- * 只处理 libraryMatches（应当指向书库真实条目）；externalMatches 是站外新书，
- * 天然没有 bookId，一律不碰。
+ *
+ * - `libraryMatches` 应当指向书库真实条目：ID 对得上保留，对不上按书名反查修复，
+ *   修不掉才丢弃。
+ * - `externalMatches` 是站外新书、天然没有 bookId，**但不能因此完全不校验**：
+ *   提示词红线第 4 条明写"不要推荐书库中已有的书作为外部推荐"，模型照样会犯
+ *   （实测同一次评估里《悉达多》既在 libraryMatches 又在 externalMatches）。
+ *   所以至少要用书名归一化查一遍重，命中的直接丢掉。
  */
 export function validateAdvisorJson(raw: string, library: Book[]): ValidatedAdvisorJson {
   const parsed = sliceJson(raw);
   if (!parsed || typeof parsed !== 'object') return { json: raw };
-  if (!Array.isArray(parsed.libraryMatches) || parsed.libraryMatches.length === 0) {
-    return { json: raw };
-  }
 
+  const hasLibraryMatches = Array.isArray(parsed.libraryMatches) && parsed.libraryMatches.length > 0;
+  const hasExternalMatches = Array.isArray(parsed.externalMatches) && parsed.externalMatches.length > 0;
+  if (!hasLibraryMatches && !hasExternalMatches) return { json: raw };
+
+  // 索引一次建好：libraryMatches 要对齐 ID，externalMatches 要查重
   const byId = new Map<string, Book>();
   const byTitle = new Map<string, Book[]>();
   for (const book of library) {
@@ -106,31 +113,50 @@ export function validateAdvisorJson(raw: string, library: Book[]): ValidatedAdvi
 
   const kept: any[] = [];
   const droppedTitles: string[] = [];
+  const externalDuplicates: string[] = [];
   let repaired = 0;
 
-  for (const match of parsed.libraryMatches) {
-    if (!match || typeof match !== 'object') {
-      droppedTitles.push('(非对象条目)');
-      continue;
-    }
+  if (hasLibraryMatches) {
+    for (const match of parsed.libraryMatches) {
+      if (!match || typeof match !== 'object') {
+        droppedTitles.push('(非对象条目)');
+        continue;
+      }
 
-    const direct = typeof match.bookId === 'string' ? byId.get(match.bookId) : undefined;
-    if (direct) {
-      kept.push(match);
-      continue;
-    }
+      const direct = typeof match.bookId === 'string' ? byId.get(match.bookId) : undefined;
+      if (direct) {
+        kept.push(match);
+        continue;
+      }
 
-    const title = typeof match.title === 'string' ? match.title : '';
-    const fallback = title ? findUniqueByTitle(title, byTitle, library) : undefined;
-    if (fallback) {
-      match.bookId = fallback.id;
-      match.title = fallback.title;
-      kept.push(match);
-      repaired++;
-      continue;
-    }
+      const title = typeof match.title === 'string' ? match.title : '';
+      const fallback = title ? findUniqueByTitle(title, byTitle, library) : undefined;
+      if (fallback) {
+        match.bookId = fallback.id;
+        match.title = fallback.title;
+        kept.push(match);
+        repaired++;
+        continue;
+      }
 
-    droppedTitles.push(title || match.bookId || '(无书名无ID)');
+      droppedTitles.push(title || match.bookId || '(无书名无ID)');
+    }
+    parsed.libraryMatches = kept;
+  }
+
+  if (hasExternalMatches) {
+    const remaining: any[] = [];
+    for (const ext of parsed.externalMatches) {
+      if (!ext || typeof ext !== 'object') continue;
+      const title = typeof ext.title === 'string' ? ext.title : '';
+      const dup = title ? findUniqueByTitle(title, byTitle, library) : undefined;
+      if (dup) {
+        externalDuplicates.push(dup.title);
+        continue;
+      }
+      remaining.push(ext);
+    }
+    parsed.externalMatches = remaining;
   }
 
   const validation: MatchValidation = {
@@ -138,14 +164,15 @@ export function validateAdvisorJson(raw: string, library: Book[]): ValidatedAdvi
     repaired,
     dropped: droppedTitles.length,
     droppedTitles,
+    externalDuplicates,
   };
 
   console.log(
     `[AI] 推荐校验: 保留 ${validation.kept} 条（其中按书名修复 ${validation.repaired} 条），丢弃 ${validation.dropped} 条` +
-      (droppedTitles.length > 0 ? ` → ${droppedTitles.join('、')}` : ''),
+      (droppedTitles.length > 0 ? ` → ${droppedTitles.join('、')}` : '') +
+      (externalDuplicates.length > 0 ? `；站外推荐去重 ${externalDuplicates.length} 条 → ${externalDuplicates.join('、')}` : ''),
   );
 
-  parsed.libraryMatches = kept;
   parsed.matchValidation = validation;
   return { json: JSON.stringify(parsed), validation };
 }

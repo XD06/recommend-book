@@ -20,6 +20,8 @@ export interface UserProgress {
   progressPercentage: number;
   startDate?: string;
   completionDate?: string;
+  /** 用户自评 1–5 星。存放位置就是这个 JSON（books.user_data），不需要加列 */
+  userRating?: number;
 }
 
 export interface AIInsight {
@@ -51,9 +53,10 @@ export interface Book {
   coverColor?: string;
   coverUrl?: string;
 
-  // 评分
-  rating?: number;         // 用户评分
-  doubanRating?: number;   // 豆瓣评分
+  // 评分：两套量纲，禁止混用。豆瓣是 10 分制，用户自评是 1–5 星。
+  rating?: number;         // 历史遗留：导入期把豆瓣分写进了这里（值 >5 即豆瓣量纲），新数据不再写
+  userRating?: number;     // 用户自评 1–5 星（权威存储是 userData.userRating）
+  doubanRating?: number;   // 豆瓣评分（10 分制，权威来源为 doubanData.rating_score）
 
   // 阅读笔记（用户记录的思考、感悟、问题）
   notes?: string[];
@@ -171,12 +174,34 @@ export interface CategoryContext {
 
 export type ReadingLevel = 'beginner' | 'intermediate' | 'advanced' | 'expert';
 
+/**
+ * 画像字段的来源。两类信息的性质完全不同，绝不能混为一谈：
+ * - `user`：用户自己填的（设置页）或用户在对话里明确说的 —— 是**用户的期望**，
+ *   可能不够详细、不够准确，但它是权威，AI 的推测不得覆盖它。
+ * - `ai`：AI 从对话里记录/推断的 —— 是**猜测**，可能不准，必须可被修正，
+ *   所以要连依据（用户原话）一起存下来。
+ */
+export type ProfileFieldSource = 'user' | 'ai';
+
+export interface ProfileFieldMeta {
+  source: ProfileFieldSource;
+  /** 来源渠道：设置页表单 / 对话中明确陈述（仅 source='user' 时有意义） */
+  via?: 'form' | 'conversation';
+  /** 写入依据（用户原话片段）。AI 记录时必填，供"这是推测，依据是…"展示 */
+  evidence?: string;
+  updatedAt?: string;
+}
+
 export interface UserProfile {
   nickname?: string;
   readingLevel: ReadingLevel;
   readingGoal?: string;
   preferredCategories: string[];
   dailyReadingTime?: number;
+  /** 画像最后更新时间（user_profiles.updated_at）。注入给模型时用来提示画像是否过期 */
+  updatedAt?: string;
+  /** 逐字段的来源元数据（见 ProfileFieldSource）。缺省表示该字段从未被写过 */
+  fieldMeta?: Record<string, ProfileFieldMeta>;
   aiAnalysis?: {
     inferredLevel: ReadingLevel;
     readingPattern: string;
@@ -215,6 +240,11 @@ export interface AgentContext {
   userId: string;
   library: Book[];
   userProfile?: UserProfile;
+  /**
+   * 采纳反馈摘要（想读 / 跳过），由 createAgentContext 从 recommendation_feedback 读成一行文本。
+   * 没有读取方时这张表只是账本，读回来才能影响下一次排序。
+   */
+  feedbackSummary?: string;
   /** 工具结果缓存，key 为 `toolName:JSON.stringify(args)` */
   toolCache: Map<string, string>;
   /** 本次请求已消耗的 Exa 调用次数 */
@@ -261,6 +291,8 @@ export interface MatchValidation {
   repaired: number;
   dropped: number;
   droppedTitles: string[];
+  /** 与书库同名的站外推荐（提示词禁止但模型仍会犯），已剔除并在此留证 */
+  externalDuplicates?: string[];
 }
 
 export interface ExternalRecommendation {

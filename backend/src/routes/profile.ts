@@ -50,8 +50,10 @@ const updateProfileSchema = z.object({
 
 router.put('/', (req, res) => {
   const data = updateProfileSchema.parse(req.body);
-  // 与 Agent 的 update_user_profile 工具共用同一个写入函数
-  res.json({ success: true, data: updateUserProfileInDb(req.user!.id, data) });
+  // 设置页填写 = 用户的期望，来源记为 'user'：此后 AI 的推测不得覆盖这些字段。
+  // 与 Agent 的 update_user_profile 工具共用同一个写入函数。
+  const { profile, written } = updateUserProfileInDb(req.user!.id, data, { source: 'user', via: 'form' });
+  res.json({ success: true, data: profile, written });
 });
 
 // ============================================================================

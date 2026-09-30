@@ -87,7 +87,11 @@ export function withTools(
   if (isWebSearchEnabled()) {
     result += WEB_SEARCH_GUIDELINE;
   }
-  result += `\n\n你可以根据需要使用工具查询用户书库，以获得更精准的结果。建议优先使用 get_reading_taste_profile 和 get_reading_gaps 了解用户的阅读品味和知识缺口，这样你的推荐会更加精准和有洞察力。如果用户提到了对某本书的思考或感悟，可以使用 get_reading_notes 查看用户的阅读笔记，了解更深层的想法。如果书库概览中已有足够信息，可以直接给出回复。如需使用工具，最多 ${maxRounds} 轮即可。`;
+  // 这里刻意不写"建议优先使用 get_reading_taste_profile / get_reading_gaps"：
+  // 这两者的紧凑版已经常驻在书库概览里（buildLibraryOverview 的【阅读品味画像】），
+  // 而工具预算只有 3–4 轮（aiService 的 MAX_ROUNDS），诱导模型先空调一轮等于烧掉
+  // 四分之一的预算，且它拿不到概览里没有的信息。
+  result += `\n\n工具的作用是补概览里没有的信息。概览里已经给到：书库统计、阅读品味画像、在读书籍、按规模分档的书目索引（档位声明会写明覆盖了多少本）。概览够用就直接回答，不要为了用工具而用工具；只有需要具体书目、某本书的详情、知识缺口明细或阅读笔记时才调用。如需使用工具，最多 ${maxRounds} 轮即可。`;
   return result;
 }
 

@@ -26,11 +26,22 @@
  * v5：书库与画像改为按 userId 直读 SQLite（不再吃前端传来的快照），
  * 工具缓存改为请求作用域，update_book_status 直接落库。
  * v6：新增 update_user_profile 写工具 — 对话中问出来的偏好落回 user_profiles。
+ * v7：修正喂给模型的"关于这个人"的信号 —— 画像未设置就不冒充（isProfileConfigured）、
+ * 豆瓣分与用户自评分不再混算（resolveUserRating/resolveDoubanRating）、
+ * 没有阅读行为就不推断阅读人格、未读多不再劝模型"别推荐新书"、
+ * 关键词检索覆盖分类与子分类、采纳反馈有读取端。
  */
 
 import { Book, BookStatus, BookLevel, UserProfile, ReadingLevel, AgentContext } from '../types';
-import { updateBookProgressInDb, updateUserProfileInDb, loadUserLibrary, loadUserProfile, UserProfilePatch } from '../db/database';
-import { computeLibraryStats, formatCategoryDistribution } from './libraryStats';
+import {
+  updateBookProgressInDb,
+  updateUserProfileInDb,
+  loadUserLibrary,
+  loadUserProfile,
+  summarizeRecommendationFeedback,
+  UserProfilePatch,
+} from '../db/database';
+import { computeLibraryStats, formatCategoryDistribution, resolveUserRating, resolveDoubanRating } from './libraryStats';
 import {
   WEB_TOOLS,
   executeWebTool,
@@ -51,6 +62,28 @@ const TOOL_CACHE_MAX = 50;
  * 凭空给出的 ID 必然是猜的 — 推荐路径的书库硬闸门按这条线决定是否启用。
  */
 export const FULL_INDEX_LIMIT = 100;
+
+/**
+ * 画像是否真的被用户设置过。
+ *
+ * `user_profiles.reading_level` 在注册那一刻就被写成 'beginner'（routes/auth.ts），
+ * 所以"表里有行 = 有画像"是错的。真实数据里的表现是：413 本书的用户，画像只有
+ * 一行默认值（目标/偏好/时长/AI分析全空），而模型被明确告知"水平: beginner"，
+ * 于是系统性地把推荐压回入门书——这是当下对个性化伤害最大的一条。
+ *
+ * 判定口径：任一"只有用户会填"的字段有值，或水平被改成过非默认值。
+ * 宁可说"未设置"（模型会去问），也不要拿默认值冒充用户陈述。
+ */
+export function isProfileConfigured(profile?: UserProfile): boolean {
+  if (!profile) return false;
+  if (profile.readingLevel && profile.readingLevel !== 'beginner') return true;
+  return Boolean(
+    (profile.readingGoal && profile.readingGoal.trim()) ||
+    (profile.preferredCategories && profile.preferredCategories.length > 0) ||
+    (profile.dailyReadingTime && profile.dailyReadingTime > 0) ||
+    profile.aiAnalysis,
+  );
+}
 
 /** 生成缓存 key */
 function getCacheKey(toolName: string, args: Record<string, any>): string {
@@ -88,7 +121,8 @@ function setCachedToolResult(
 }
 
 /** 判断是否为写工具（写工具不缓存） */
-function isWriteTool(toolName: string): boolean {
+/** 写工具必须排除在请求级工具缓存之外，否则会读到上一轮的旧结果 */
+export function isWriteTool(toolName: string): boolean {
   return toolName === 'update_book_status' || toolName === 'update_user_profile';
 }
 
@@ -241,7 +275,11 @@ export const LIBRARY_TOOLS = [
     type: 'function' as const,
     function: {
       name: 'update_user_profile',
-      description: '更新用户阅读画像（写操作）。当用户在对话中透露了稳定的阅读水平、阅读目标、偏好分类或每日阅读时间时使用，使下一次会话不必重新询问。只写用户明确说过的内容，不要根据推荐结果或猜测反推；只传需要修改的字段，未传的字段保持不变。',
+      description: '更新用户阅读画像（写操作）。当用户透露了稳定的阅读水平、阅读目标、偏好分类或每日阅读时间时使用，使下一次会话不必重新询问。'
+        + '只写用户明确说过的内容，不要根据推荐结果或猜测反推；只传需要修改的字段，未传的字段保持不变。'
+        + '每个字段都有来源：用户自己填过的字段属于用户的期望，你的推测不得覆盖——工具会拒绝并告诉你哪几个字段被拒，'
+        + '这时要如实告诉用户你沿用了 TA 自己定的值。只有用户本轮明确要求改某个字段时，才把它标为 userStated=true。'
+        + 'evidence 必填：直接引用用户的原话片段，它会连同"这是推测还是用户说的"一起展示给用户。',
       parameters: {
         type: 'object',
         properties: {
@@ -249,7 +287,10 @@ export const LIBRARY_TOOLS = [
           readingGoal: { type: 'string', description: '阅读目标（如"打牢系统编程基础"）' },
           preferredCategories: { type: 'array', items: { type: 'string' }, description: '偏好分类列表。覆盖式更新：传入即替换原有列表，必须先合并用户已有的偏好再提交' },
           dailyReadingTime: { type: 'number', description: '每日可用阅读时间（分钟）' },
+          userStated: { type: 'boolean', description: '用户本轮是否明确说出了这些值（而不是你从别处推断）。只有 true 时才允许修改用户自己填过的字段；不确定就传 false' },
+          evidence: { type: 'string', description: '必填：你依据用户哪句话写入的，直接引用原话片段（≤120字）' },
         },
+        required: ['evidence'],
       },
     },
   },
@@ -266,6 +307,26 @@ const LIBRARY_TOOL_NAMES = new Set(LIBRARY_TOOLS.map((t) => t.function.name));
 export type BookUpdateCallback = (bookId: string, updates: Partial<Book>) => void;
 
 /**
+ * 把采纳反馈读成一段文本。
+ *
+ * `recommendation_feedback` 建好之后一直只有写入方（前端按钮）和 REST 读接口，
+ * 推荐链路从不读它 —— "用户点过想读/跳过"对下一次推荐零影响。这里是读取端。
+ */
+function buildFeedbackSummary(userId: string): string | undefined {
+  const s = summarizeRecommendationFeedback(userId);
+  if (s.want.length === 0 && s.skip.length === 0) return undefined;
+
+  const fmt = (list: Array<{ title: string; category: string | null }>) =>
+    list.map((x) => (x.category ? `《${x.title}》(${x.category})` : `《${x.title}》`)).join('、');
+
+  const lines = [`最近 ${s.shownCount} 条推荐被展示过，用户点过「想读」${s.wantCount} 次、「跳过」${s.skipCount} 次。`];
+  if (s.want.length) lines.push(`点过「想读」：${fmt(s.want)}`);
+  if (s.skip.length) lines.push(`点过「跳过」：${fmt(s.skip)}`);
+  lines.push('对「想读」的同类或同作者优先给出延续推荐；对「跳过」的不要原样再推，除非本次请求明确指向它。');
+  return lines.join('\n');
+}
+
+/**
  * 装配一次 Agent 请求的上下文。由路由调用：客户端只交 userId（来自 JWT），
  * 书库与画像一律服务端取，避免"前端快照即模型真相"。
  */
@@ -274,6 +335,7 @@ export function createAgentContext(userId: string): AgentContext {
     userId,
     library: loadUserLibrary(userId),
     userProfile: loadUserProfile(userId),
+    feedbackSummary: buildFeedbackSummary(userId),
     toolCache: new Map(),
     webCalls: 0,
     webCostUsd: 0,
@@ -450,7 +512,9 @@ interface BookBrief {
   subcategory: string;
   level: string;
   status: string;
-  rating?: number;
+  /** 用户自评 1–5 星；未评过为 undefined */
+  userRating?: number;
+  /** 豆瓣评分 10 分制；与 userRating 不是同一件事 */
   doubanRating?: number;
   progress?: number;
   tags?: string[];
@@ -465,23 +529,42 @@ function toBrief(book: Book): BookBrief {
     subcategory: book.subcategory,
     level: book.level,
     status: book.status,
-    rating: book.rating,
-    doubanRating: book.doubanData?.rating_score,
+    // 两套量纲必须分开报：把豆瓣 8.4 当成"用户给了 8.4 分"，模型就会推出
+    // "这个用户评价偏高、比较宽容"这种凭空捏造的人格判断
+    userRating: resolveUserRating(book),
+    doubanRating: resolveDoubanRating(book),
     progress: book.userData?.progressPercentage,
     tags: book.tags,
   };
+}
+
+/**
+ * 关键词检索的覆盖范围。
+ *
+ * 原来只匹配 title/author/tags：实测书库里 79 本心理学书只有 17 本的书名或作者
+ * 含"心理学"字样，模型传 keyword="心理学" 会得到"书里没有几本心理学书"的错误结论
+ * （除非它恰好改用 category 参数）。分类、子分类、豆瓣标签与摘要一并纳入。
+ */
+function matchesKeyword(book: Book, kw: string): boolean {
+  const haystack: Array<string | undefined> = [
+    book.title,
+    book.author,
+    book.category,
+    book.subcategory,
+    ...(book.tags || []),
+    ...(book.doubanData?.tags?.map((t) => t.name) || []),
+    book.doubanData?.summary,
+    book.aiInsight?.summary,
+  ];
+  return haystack.some((v) => typeof v === 'string' && v.toLowerCase().includes(kw));
 }
 
 function searchLibrary(args: Record<string, any>, library: Book[]): { total: number; books: BookBrief[] } {
   let result = [...library];
 
   if (args.keyword) {
-    const kw = args.keyword.toLowerCase();
-    result = result.filter(b =>
-      b.title.toLowerCase().includes(kw) ||
-      b.author.toLowerCase().includes(kw) ||
-      (b.tags && b.tags.some(t => t.toLowerCase().includes(kw)))
-    );
+    const kw = String(args.keyword).toLowerCase().trim();
+    result = result.filter(b => matchesKeyword(b, kw));
   }
   if (args.category) {
     result = result.filter(b => b.category === args.category || b.subcategory === args.category);
@@ -521,8 +604,8 @@ function getBookDetails(args: Record<string, any>, library: Book[]): any[] {
     level: b.level,
     status: b.status,
     tags: b.tags,
-    rating: b.rating,
-    doubanRating: b.doubanData?.rating_score,
+    userRating: resolveUserRating(b),
+    doubanRating: resolveDoubanRating(b),
     doubanRatingCount: b.doubanData?.rating_count,
     aiInsight: b.aiInsight ? {
       summary: b.aiInsight.summary,
@@ -557,7 +640,8 @@ function getCategoryStats(args: Record<string, any>, library: Book[]): any {
     reading: s.totals.reading,
     finished: s.totals.finished,
     unread: s.totals.unread,
-    avgRating: s.rating.avg > 0 ? s.rating.avg.toFixed(1) : null,
+    avgDoubanRating: s.doubanRating.count > 0 ? s.doubanRating.avg.toFixed(1) : null,
+    avgUserRating: s.userRating.count > 0 ? s.userRating.avg.toFixed(1) : null,
     levelDistribution: s.levels,
     books: books.map(b => ({
       id: b.id,
@@ -566,8 +650,8 @@ function getCategoryStats(args: Record<string, any>, library: Book[]): any {
       level: b.level,
       status: b.status,
       progress: b.userData?.progressPercentage,
-      rating: b.rating,
-      doubanRating: b.doubanData?.rating_score,
+      userRating: resolveUserRating(b),
+      doubanRating: resolveDoubanRating(b),
     })),
   };
 }
@@ -590,35 +674,78 @@ function getReadingHistory(args: Record<string, any>, library: Book[]): any[] {
     category: b.category,
     subcategory: b.subcategory,
     level: b.level,
-    rating: b.rating,
-    doubanRating: b.doubanData?.rating_score,
+    userRating: resolveUserRating(b),
+    doubanRating: resolveDoubanRating(b),
     completionDate: b.userData?.completionDate,
     aiSummary: b.aiInsight?.summary?.slice(0, 100),
   }));
 }
 
 function getUserProfile(userProfile?: UserProfile): any {
-  if (!userProfile) {
-    return { error: '用户尚未设置画像信息' };
+  if (!isProfileConfigured(userProfile)) {
+    return {
+      configured: false,
+      note: '用户尚未设置画像：没填过阅读水平/目标/偏好分类/每日时长，也没有 AI 分析。'
+        + '不要在对话里假设 TA 的水平（默认值 beginner 不代表用户是初学者），'
+        + '如需个性化请自然询问，问到后调用 update_user_profile 落盘。',
+    };
   }
 
   const levelMap: Record<string, string> = {
     beginner: '初学者', intermediate: '中级读者', advanced: '高级读者', expert: '专家级',
   };
+  const p = userProfile!;
+
+  // 按来源分组返回：模型必须能一眼看出"哪些是用户定的（不可覆盖）、哪些是我自己记的
+  // （可修正）、哪些还是空的（可以问）"。混成一个对象就会出现"拿推断当用户要求"。
+  const fieldMeta = p.fieldMeta || {};
+  const valueOf = (field: string): any => {
+    switch (field) {
+      case 'readingLevel': return p.readingLevel;
+      case 'readingGoal': return p.readingGoal;
+      case 'preferredCategories': return p.preferredCategories;
+      case 'dailyReadingTime': return p.dailyReadingTime;
+      case 'nickname': return p.nickname;
+      default: return undefined;
+    }
+  };
+  const isSet = (field: string): boolean => {
+    const v = valueOf(field);
+    if (Array.isArray(v)) return v.length > 0;
+    return v !== undefined && v !== null && String(v).trim() !== '';
+  };
+
+  const userStated: Record<string, any> = {};
+  const aiRecorded: Array<{ field: string; value: any; evidence?: string; updatedAt?: string }> = [];
+  const unset: string[] = [];
+
+  for (const field of ['readingLevel', 'readingGoal', 'preferredCategories', 'dailyReadingTime']) {
+    const meta = fieldMeta[field];
+    if (!isSet(field)) { unset.push(field); continue; }
+    if (meta?.source === 'user') {
+      userStated[field] = valueOf(field);
+      if (meta.via === 'conversation') userStated[`${field}_note`] = `用户在对话中明确说过（原话：${meta.evidence || '未记录'}）`;
+    } else {
+      aiRecorded.push({ field, value: valueOf(field), evidence: meta?.evidence, updatedAt: meta?.updatedAt });
+    }
+  }
 
   return {
-    readingLevel: userProfile.readingLevel,
-    readingLevelLabel: levelMap[userProfile.readingLevel] || userProfile.readingLevel,
-    nickname: userProfile.nickname,
-    readingGoal: userProfile.readingGoal,
-    preferredCategories: userProfile.preferredCategories,
-    dailyReadingTime: userProfile.dailyReadingTime,
-    aiAnalysis: userProfile.aiAnalysis ? {
-      inferredLevel: userProfile.aiAnalysis.inferredLevel,
-      readingPattern: userProfile.aiAnalysis.readingPattern,
-      blindSpots: userProfile.aiAnalysis.blindSpots,
-      recommendedFocus: userProfile.aiAnalysis.recommendedFocus,
-      lastUpdated: userProfile.aiAnalysis.lastUpdated,
+    configured: true,
+    lastUpdated: p.updatedAt,
+    readingLevelLabel: levelMap[p.readingLevel] || p.readingLevel,
+    /** 用户自己定的：权威，不要覆盖，也不要否定 */
+    userStated,
+    /** AI 记录的（可能是推测）：与用户当前说法冲突时以用户为准 */
+    aiRecorded,
+    /** 还没设置：可以自然地问，问到后用 update_user_profile 落盘 */
+    unset,
+    aiAnalysis: p.aiAnalysis ? {
+      inferredLevel: p.aiAnalysis.inferredLevel,
+      readingPattern: p.aiAnalysis.readingPattern,
+      blindSpots: p.aiAnalysis.blindSpots,
+      recommendedFocus: p.aiAnalysis.recommendedFocus,
+      lastUpdated: p.aiAnalysis.lastUpdated,
     } : undefined,
   };
 }
@@ -761,23 +888,47 @@ function getReadingTasteProfile(library: Book[]): any {
     .slice(0, 5)
     .map(([author, count]) => ({ author, count }));
 
-  // === 6. 评分倾向 ===
-  const ratedBooks = library.filter(b => b.rating);
-  const ratingTendency = ratedBooks.length > 0
-    ? {
-        avgRating: (ratedBooks.reduce((sum, b) => sum + (b.rating || 0), 0) / ratedBooks.length).toFixed(1),
-        ratingCount: ratedBooks.length,
-        tendency: (() => {
-          const avg = ratedBooks.reduce((sum, b) => sum + (b.rating || 0), 0) / ratedBooks.length;
-          if (avg >= 4.2) return '评价偏高，可能比较宽容或只选好书';
-          if (avg < 3.2) return '评价偏严，对书籍质量要求高';
-          return '评价适中';
-        })(),
-      }
-    : null;
+  // 行为数据是否真的存在 —— 没有它，一切"阅读人格"推断都是把藏书目录当阅读日志
+  const progressRecords = library.filter(b => (b.userData?.progressPercentage || 0) > 0).length;
+  const hasBehaviorData = finished.length > 0 || progressRecords > 0;
+
+  // === 6. 评分倾向（只用用户自评，且样本足够才算） ===
+  // 历史坑：这里原先是 `library.filter(b => b.rating)`，而导入期把豆瓣分（10 分制）
+  // 写进了 rating —— 实测 395 条里 393 条 > 5、均值 8.43，判据 `avg >= 4.2` 恒真，
+  // 于是模型被告知"这个用户评价偏高、比较宽容或只选好书"，而真人只亲手评过 2 本。
+  const MIN_RATING_SAMPLES = 3;
+  const userRatedBooks = library
+    .map(b => ({ book: b, value: resolveUserRating(b) }))
+    .filter(x => x.value !== undefined) as Array<{ book: Book; value: number }>;
+  const ratingTendency = userRatedBooks.length >= MIN_RATING_SAMPLES
+    ? (() => {
+        const avg = userRatedBooks.reduce((s, x) => s + x.value, 0) / userRatedBooks.length;
+        return {
+          avgRating: avg.toFixed(1),
+          ratingCount: userRatedBooks.length,
+          scale: '1-5 星（用户自评）',
+          tendency: avg >= 4.2 ? '评价偏高，可能比较宽容或只选好书'
+            : avg < 3.2 ? '评价偏严，对书籍质量要求高'
+            : '评价适中',
+        };
+      })()
+    : {
+        ratingCount: userRatedBooks.length,
+        note: `用户亲手评分过的书只有 ${userRatedBooks.length} 本（不足 ${MIN_RATING_SAMPLES} 本），不足以判断评价倾向。豆瓣评分是大众评分，不能当作这个用户的偏好。`,
+      };
 
   // === 7. 阅读人格推断（深度个性化） ===
-  const readingPersonality = (() => {
+  const readingPersonality: any = (() => {
+    // 0 本读完 + 无任何进度 ≠ "这是个不追求读完的人"，而是"还不知道这个人怎么读"。
+    // 真实数据里正是这个状态：413 本藏书、0 本读完、4 本"在读"进度全为 0，
+    // 旧逻辑据此输出"探索型读者（广泛涉猎，不追求读完）"——一句凭空的人格判决。
+    if (!hasBehaviorData) {
+      return {
+        insufficientData: true,
+        note: '尚无阅读行为记录（没有读完的书，也没有任何阅读进度），无法推断阅读人格。'
+          + '不要把"藏书多但还没读"解释成"停留在舒适区""不追求读完""购书冲动"或"阅读不连贯"——那只是书目刚建立。',
+      };
+    }
     const finishRate = total > 0 ? finished.length / total : 0;
     const avgBooksPerCategory = Object.keys(catMap).length > 0 ? total / Object.keys(catMap).length : 0;
 
@@ -837,7 +988,7 @@ function getReadingTasteProfile(library: Book[]): any {
       difficultyEvolution = '未知';
     }
 
-    return { readerType, depthBreadth, learningStyle, consistency, difficultyEvolution };
+    return { insufficientData: false, readerType, depthBreadth, learningStyle, consistency, difficultyEvolution };
   })();
 
   return {
@@ -852,14 +1003,20 @@ function getReadingTasteProfile(library: Book[]): any {
     trajectory,
     ratingTendency,
     readingPersonality,
+    /** 行为数据是否存在。false 时上面除 knowledgeStructure / preferenceProfile 外的推断都不可信 */
+    hasBehaviorData,
     summary: `藏书${total}本（在读${reading.length}、已读${finished.length}、未读${unread.length}），` +
       `主要领域：${topCategories.slice(0, 3).map(c => c.category).join('、')}。` +
       `难度偏好：${preferenceProfile.difficultyPreference}。` +
-      `阅读节奏：完成率${readingPace.finishedRate}，` +
-      (readingPace.stuckBooks > 0 ? `有${readingPace.stuckBooks}本在读但进度停滞。` : '') +
+      (hasBehaviorData
+        ? `阅读节奏：完成率${readingPace.finishedRate}，` +
+          (readingPace.stuckBooks > 0 ? `有${readingPace.stuckBooks}本在读但进度停滞。` : '')
+        : `阅读行为：尚无记录（未读完任何一本、也没有任何进度数据），不要据此推断阅读习惯。`) +
       (trajectory.categoryHopping ? trajectory.categoryHopping : '') +
-      `\n阅读人格：${readingPersonality.readerType}，${readingPersonality.depthBreadth}，${readingPersonality.learningStyle}。` +
-      `${readingPersonality.consistency}。难度进化：${readingPersonality.difficultyEvolution}。`,
+      (readingPersonality.insufficientData
+        ? `\n阅读人格：${readingPersonality.note}`
+        : `\n阅读人格：${readingPersonality.readerType}，${readingPersonality.depthBreadth}，${readingPersonality.learningStyle}。` +
+          `${readingPersonality.consistency}。难度进化：${readingPersonality.difficultyEvolution}。`),
   };
 }
 
@@ -976,16 +1133,30 @@ function getReadingGaps(library: Book[]): any {
     });
   }
 
-  // === 5. 未读积压检测 ===
+  // === 5. 未读积压检测（先判断这是"积压"还是"刚建好的书目"） ===
   const unreadCount = library.filter(b => b.status === BookStatus.UNREAD).length;
   const totalCount = library.length;
-  if (unreadCount > totalCount * 0.6 && unreadCount > 5) {
+  const finishedCount = library.filter(b => b.status === BookStatus.FINISHED).length;
+  const progressRecords = library.filter(b => (b.userData?.progressPercentage || 0) > 0).length;
+  const hasBehaviorData = finishedCount > 0 || progressRecords > 0;
+
+  if (unreadCount > totalCount * 0.6 && unreadCount > 5 && !hasBehaviorData) {
+    // 真实数据就是这个状态：413 本里 409 本未读、0 本读完、无任何进度。
+    // 旧逻辑在这里输出"购书冲动、阅读速度跟不上"并建议"不建议继续推荐新书"——
+    // 一个荐书应用对着一份刚导入的书目，把自己劝停了。
+    gaps.push({
+      type: 'catalog_not_started',
+      severity: 'info',
+      description: `书库 ${totalCount} 本中 ${unreadCount} 本未读，且没有任何阅读行为记录（0 本读完、无进度数据）——` +
+        `这看起来是刚建立的书目，而不是"积压"。`,
+      suggestion: '正常推荐即可，并可顺带给出"先从哪本开始"的建议；不要据此判断用户读不完书，也不要因此拒绝推荐新书。',
+    });
+  } else if (unreadCount > totalCount * 0.6 && unreadCount > 5) {
     gaps.push({
       type: 'backlog_gap',
       severity: 'low',
-      description: `未读书籍占${Math.round(unreadCount / totalCount * 100)}%（${unreadCount}/${totalCount}本），积压较多。` +
-        `这可能意味着购书过于冲动或阅读速度跟不上。建议优先消化现有藏书。`,
-      suggestion: '不建议继续推荐新书，帮助用户制定阅读计划',
+      description: `未读书籍占${Math.round(unreadCount / totalCount * 100)}%（${unreadCount}/${totalCount}本），存量偏多。`,
+      suggestion: '在推荐里可以优先安排已有藏书的阅读顺序，但这只是排序偏好，不代表不能推荐新书。',
     });
   }
 
@@ -993,12 +1164,16 @@ function getReadingGaps(library: Book[]): any {
   const highSeverity = gaps.filter(g => g.severity === 'high');
   const mediumSeverity = gaps.filter(g => g.severity === 'medium');
   const lowSeverity = gaps.filter(g => g.severity === 'low');
+  const infoItems = gaps.filter(g => g.severity === 'info');
 
   return {
     totalGaps: gaps.length,
     highPriority: highSeverity,
     mediumPriority: mediumSeverity,
     lowPriority: lowSeverity,
+    info: infoItems,
+    /** 行为数据是否存在。false 时"进度缺口"类判断无从谈起 */
+    hasBehaviorData,
     allGaps: gaps,
     overallAssessment: gaps.length === 0
       ? '阅读结构较为均衡，未发现明显的知识缺口。'
@@ -1006,7 +1181,9 @@ function getReadingGaps(library: Book[]): any {
         ? `发现${highSeverity.length}个高优先级缺口，建议优先关注。`
         : mediumSeverity.length > 0
           ? `发现${mediumSeverity.length}个中等优先级缺口，适当调整阅读方向。`
-          : `发现${lowSeverity.length}个小问题，整体阅读状况良好。`,
+          : lowSeverity.length > 0
+            ? `发现${lowSeverity.length}个小问题，整体阅读状况良好。`
+            : `仅有 ${infoItems.length} 条提示（书库尚未开始记录阅读行为），不构成知识缺口。`,
   };
 }
 
@@ -1090,10 +1267,13 @@ function updateBookStatus(
     updates.userData = book.userData;
   }
 
-  // 更新评分
+  // 更新评分：写 user_data.userRating，不再动 books.rating
+  // （rating 列里躺着导入期的豆瓣分，混着写会让两套量纲彻底分不开）
   if (typeof rating === 'number' && rating >= 1 && rating <= 5) {
-    book.rating = rating;
-    updates.rating = rating;
+    book.userRating = rating;
+    book.userData = { ...(book.userData || { totalPages: 0, currentPage: 0, progressPercentage: 0 }), userRating: rating };
+    updates.userRating = rating;
+    updates.userData = book.userData;
   }
 
   // 完成日期
@@ -1118,7 +1298,7 @@ function updateBookStatus(
 
   const persisted = updateBookProgressInDb(ctx.userId, bookId, {
     status: updates.status,
-    rating: updates.rating,
+    userRating: updates.userRating,
     userData: updates.userData,
   });
 
@@ -1145,13 +1325,18 @@ function updateBookStatus(
 }
 
 /**
- * 把对话里问出来的稳定偏好落进 user_profiles。
+ * 把"模型给的画像字段"规范化成可写 patch。
  *
- * 没有这一步，Agent 花两轮问清的阅读水平/目标在下次会话里全部作废，
- * "AI 主动询问 → 记住 → 下次不问"就退化成每次重新问。
- * 字段校验在这里做而不是交给调用方：模型会给出 "中级" 这类中文值或超范围的分钟数。
+ * 抽出来是因为现在有**两条**写画像的路径：对话中的 `update_user_profile` 工具，
+ * 以及回合结束后异步抽取（`/api/ai/profile/extract`）。两边各写一份校验必然会漂移
+ * ——一条接受 "中级"、另一条拒绝，或者一条把时长截到 600、另一条不截。
+ * 字段校验集中在这里：模型会给 "中级" 这类中文值或超范围的分钟数。
  */
-function updateUserProfile(args: Record<string, any>, ctx: AgentContext): any {
+export function normalizeProfilePatch(args: Record<string, any>): {
+  patch: UserProfilePatch;
+  changed: string[];
+  invalid: string[];
+} {
   const patch: UserProfilePatch = {};
   const invalid: string[] = [];
   const changed: string[] = [];
@@ -1196,6 +1381,18 @@ function updateUserProfile(args: Record<string, any>, ctx: AgentContext): any {
     }
   }
 
+  return { patch, changed, invalid };
+}
+
+/**
+ * 把对话里问出来的稳定偏好落进 user_profiles。
+ *
+ * 没有这一步，Agent 花两轮问清的阅读水平/目标在下次会话里全部作废，
+ * "AI 主动询问 → 记住 → 下次不问"就退化成每次重新问。
+ */
+function updateUserProfile(args: Record<string, any>, ctx: AgentContext): any {
+  const { patch, changed, invalid } = normalizeProfilePatch(args);
+
   if (changed.length === 0) {
     return {
       success: false,
@@ -1204,18 +1401,42 @@ function updateUserProfile(args: Record<string, any>, ctx: AgentContext): any {
     };
   }
 
-  const profile = updateUserProfileInDb(ctx.userId, patch);
+  // 来源判定是这个工具最容易出错的地方：
+  // · 用户在本次对话里**明确说出**了这个值 → 那是用户的话，来源 'user'（via=conversation），
+  //   允许改用户自己填过的字段（用户当然可以改自己的期望）。
+  // · 你**推断**出来的值 → 来源 'ai'，只能填空白字段或改自己之前写的字段。
+  // 把推断伪装成 userStated=true 会让 AI 的猜测覆盖掉用户的期望，比不写更糟。
+  const userStated = args.userStated === true;
+  const evidence = typeof args.evidence === 'string' ? args.evidence.trim() : '';
+
+  const result = updateUserProfileInDb(ctx.userId, patch, {
+    source: userStated ? 'user' : 'ai',
+    via: userStated ? 'conversation' : undefined,
+    evidence: evidence || undefined,
+  });
+
   // 画像刚变，本轮已缓存的 get_user_profile / 品味分析结果就过期了；
   // ctx.userProfile 同步刷新，本次回答的后续轮次能立刻看到新画像
-  ctx.userProfile = profile;
+  ctx.userProfile = result.profile;
   ctx.toolCache.clear();
 
+  const accepted = changed.filter((f) => result.written.includes(f));
+
   return {
-    success: true,
-    message: `已记住用户画像更新：${changed.join('、')}`,
-    changed,
+    success: result.written.length > 0,
+    message: result.written.length > 0
+      ? `已记住画像更新：${result.written.join('、')}`
+      : '本次没有写入任何字段',
+    written: result.written,
+    ...(accepted.length > 0 && { changed: accepted }),
+    ...(result.refused.length > 0 && {
+      refused: result.refused,
+      refusedHint: '以上字段用户自己定过（设置页填写或此前在对话里明确说过），属于用户的期望，'
+        + '不接受你的推测覆盖。请如实告诉用户你沿用了 TA 自己定的内容、并说明你的判断与它不同在哪里；'
+        + '只有用户本轮明确要求改、且你以 userStated=true 重发该字段时才能改。',
+    }),
     ...(invalid.length > 0 && { invalid }),
-    profile: getUserProfile(profile),
+    profile: getUserProfile(result.profile),
   };
 }
 
@@ -1235,9 +1456,15 @@ export function buildLibraryOverview(library: Book[]): string {
   overview += `【分类分布】${formatCategoryDistribution(stats)}\n`;
   overview += `【难度分布】入门${stats.levels[BookLevel.BASIC]}、进阶${stats.levels[BookLevel.ADVANCED]}、专家${stats.levels[BookLevel.EXPERT]}\n`;
 
-  // 评分统计
-  if (stats.rating.count > 0) {
-    overview += `【评分】已评${stats.rating.count}本，平均${stats.rating.avg.toFixed(1)}分\n`;
+  // 评分：豆瓣分与用户自评分开报，并写明量纲 —— 否则模型会把豆瓣 8.4 读成
+  // "用户给了 8.4 分"，进而推出一个关于这个人的错误结论
+  if (stats.doubanRating.count > 0) {
+    overview += `【豆瓣评分】已收录 ${stats.doubanRating.count} 本的豆瓣分，平均 ${stats.doubanRating.avg.toFixed(1)}（10 分制，大众评分，不代表用户偏好）\n`;
+  }
+  if (stats.userRating.count > 0) {
+    overview += `【用户自评】${stats.userRating.count} 本，平均 ${stats.userRating.avg.toFixed(1)} 星（5 分制，用户亲手评的）\n`;
+  } else {
+    overview += `【用户自评】暂无 —— 用户还没有亲手评分过任何书，不要从豆瓣分推断 TA 的评价倾向\n`;
   }
 
   // === 新增：阅读品味画像（紧凑版） ===
@@ -1248,7 +1475,9 @@ export function buildLibraryOverview(library: Book[]): string {
 
   // 在读书籍详情（通常只有几本，直接传）
   if (reading.length > 0) {
-    overview += `\n【在读书籍】\n`;
+    // 实测踩过的坑：4 本"在读"的进度全是 0%，模型据此推断"同时啃 4 本导致启动困难""认知过载"。
+    // 进度为 0% 通常只是用户没去记录，不是行为证据，所以在这里把口径写死。
+    overview += `\n【在读书籍】（进度为 0% 只说明还没在界面上记录进度，不代表没在读，不要据此推断阅读困难或认知过载）\n`;
     for (const b of reading) {
       overview += `[${b.id}] 《${b.title}》- ${b.author} [${b.category}/${b.subcategory}] (${b.level}, 进度${Math.round(b.userData?.progressPercentage || 0)}%)\n`;
       if (b.aiInsight?.summary) {
@@ -1264,8 +1493,9 @@ export function buildLibraryOverview(library: Book[]): string {
   if (recentFinished.length > 0) {
     overview += `\n【最近读完】\n`;
     for (const b of recentFinished) {
-      const rating = b.rating ? ` ${b.rating}★` : '';
-      overview += `[${b.id}] 《${b.title}》- ${b.author} [${b.category}] (${b.level}${rating})\n`;
+      const rating = resolveUserRating(b);
+      const ratingText = rating ? ` ${rating}★(自评)` : '';
+      overview += `[${b.id}] 《${b.title}》- ${b.author} [${b.category}] (${b.level}${ratingText})\n`;
     }
   }
 
@@ -1346,13 +1576,21 @@ function generateCompactTasteProfile(library: Book[]): string | null {
   const maxCatCount = Math.max(...Object.values(catCounts));
   const concentration = maxCatCount / total;
 
-  let profile = `难度偏好: ${difficultyPref} (入门${levelDist.Basic}/进阶${levelDist.Advanced}/专家${levelDist.Expert})\n`;
-  profile += `完成率: ${finishRate}%（已读${finished.length}/${total}）`;
+  const hasBehaviorData = finished.length > 0 || library.some(b => (b.userData?.progressPercentage || 0) > 0);
 
-  if (stuckCount > 0) {
-    profile += `，有${stuckCount}本在读但进度停滞(<30%)`;
+  let profile = `难度偏好: ${difficultyPref} (入门${levelDist.Basic}/进阶${levelDist.Advanced}/专家${levelDist.Expert})\n`;
+  if (hasBehaviorData) {
+    profile += `完成率: ${finishRate}%（已读${finished.length}/${total}）`;
+    if (stuckCount > 0) {
+      profile += `，有${stuckCount}本在读但进度停滞(<30%)`;
+    }
+    profile += `\n`;
+  } else {
+    // 0 本读完 + 无任何进度：这是"还没开始记录阅读"，不是"读不完"。
+    // 概述是常驻上下文，这句话说错会污染每一次推荐。
+    profile += `阅读行为: 尚无记录（0 本读完、无进度数据）——这是一份刚建立的书目，`
+      + `不要推断成"不追求读完""停留在舒适区""购书冲动"，也不要因此减少推荐\n`;
   }
-  profile += `\n`;
 
   profile += `阅读广度: ${categoryCount}个领域，`;
   if (categoryCount <= 2) {
@@ -1373,11 +1611,15 @@ function generateCompactTasteProfile(library: Book[]): string | null {
     profile += `\n偏好作者: ${topAuthor[0]}（${topAuthor[1]}本）`;
   }
 
-  // 阅读人格（紧凑版）—— 复用上方已计算的 finishRate（百分比）
-  const finishRatio = total > 0 ? finished.length / total : 0;
-  const personality = finishRatio >= 0.7 ? '完成型' : finishRatio < 0.3 && total > 10 ? '探索型' : '平衡型';
+  // 阅读人格（紧凑版）——没有阅读行为时只描述藏书结构，不做人格推断
   const focus = categoryCount <= 2 && total / categoryCount >= 5 ? '深度型' : categoryCount >= 6 ? '广度型' : '均衡型';
-  profile += `\n阅读人格: ${personality}+${focus}`;
+  if (hasBehaviorData) {
+    const finishRatio = total > 0 ? finished.length / total : 0;
+    const personality = finishRatio >= 0.7 ? '完成型' : finishRatio < 0.3 && total > 10 ? '探索型' : '平衡型';
+    profile += `\n阅读人格: ${personality}+${focus}（据阅读行为推断）`;
+  } else {
+    profile += `\n藏书结构: ${focus}（仅按藏书分布描述，不代表阅读行为）`;
+  }
 
   // 笔记数量
   const notesCount = library.filter(b => b.notes && b.notes.length > 0).length;

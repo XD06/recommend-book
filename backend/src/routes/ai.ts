@@ -35,10 +35,23 @@ import {
   generateReadingSummaryStream,
   organizeNotesStream,
   readingAssistantStream,
+  extractProfileUpdates,
+  hasStableProfileStatement,
   AgentHandlers,
 } from '../services/aiService';
-import { createAgentContext } from '../services/libraryTools';
-import { addRecommendationFeedback, listRecommendationFeedback } from '../db/database';
+import { createAgentContext, normalizeProfilePatch } from '../services/libraryTools';
+import {
+  addRecommendationFeedback,
+  listRecommendationFeedback,
+  summarizeRecommendationFeedback,
+  updateUserProfileInDb,
+  loadUserProfile,
+  listProfileWriteLog,
+  undoProfileWrite,
+  saveConversation,
+  loadConversation,
+  clearConversation,
+} from '../db/database';
 import { AppError, ErrorCode } from '../types';
 import { requireAuth } from '../middleware/auth';
 
@@ -317,7 +330,39 @@ router.post('/recommend/stream', validate(recommendStreamSchema), async (req, re
   try {
     const ctx = createAgentContext(req.user!.id);
     console.log(`[AI] recommend/stream 开始处理, library size: ${ctx.library.length}`);
-    const result = await getRecommendationsStream(ctx, req.body, sseHandlers(res, signal));
+    // 借 onToolCall 事件顺带记录"模型这轮有没有自己落盘画像" —— 前端据此决定
+    // 还要不要跑回合后的异步抽取（跑一次就多一次 LLM 调用，别重复做同一件事）
+    let profileToolCalled = false;
+    const handlers = sseHandlers(res, signal);
+    const baseToolCall = handlers.onToolCall;
+    handlers.onToolCall = (tool, label, round) => {
+      if (tool === 'update_user_profile') profileToolCalled = true;
+      baseToolCall?.(tool, label, round);
+    };
+
+    const result = await getRecommendationsStream(ctx, req.body, handlers);
+
+    // 记录"这一次展示了哪些书" —— 采纳率的分母。此前只记用户点过的想读/跳过，
+    // 没有分母就算不出命中率，也不知道"推了 10 本一本没点"意味着什么。
+    // requestId 由服务端生成并随结果回传，客户端点按钮时带回来，展示与点击才能归组。
+    const requestId = `srv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    if (result) {
+      (result as any).requestId = requestId;
+      (result as any).profileWritten = profileToolCalled;
+      const shown = [
+        ...((result as any).libraryMatches || []).map((m: any) => ({
+          requestId, bookId: m.bookId ?? null, title: m.title || m.bookId || '',
+          source: 'library' as const, action: 'shown' as const,
+          category: null, reason: (m.reason || '').slice(0, 300),
+        })),
+        ...((result as any).externalMatches || []).map((e: any) => ({
+          requestId, bookId: null, title: e.title || '',
+          source: 'external' as const, action: 'shown' as const,
+          category: e.category ?? null, reason: (e.reason || '').slice(0, 300),
+        })),
+      ].filter((x: any) => x.title);
+      if (shown.length > 0) addRecommendationFeedback(req.user!.id, shown);
+    }
     writeSSE(res, { type: 'done', data: result });
     res.end();
   } catch (error: any) {
@@ -325,6 +370,89 @@ router.post('/recommend/stream', validate(recommendStreamSchema), async (req, re
     writeSSE(res, { type: 'error', message: error.message });
     res.end();
   }
+});
+
+// ============================================================================
+// 回合后的画像抽取与撤销
+//
+// 为什么需要"回合后"这条路：让模型在回答的同时顺手落盘不可靠 —— 实测 27 次真实
+// 请求里它调用 update_user_profile 0 次（加了尾部指令与闸门之后才 2/2）。所以补一条
+// 不依赖模型自觉的路径：回答完再单独问一次"用户这句话里有没有稳定的画像信息"。
+// 这次调用很便宜（无工具、无书库概览、只有一句话），且有两道零成本闸门先挡：
+//   ① 顾问本轮已经自己落盘了 → 直接跳过（不重复做同一件事）
+//   ② 用户消息没命中"稳定画像自述"正则 → 直接跳过（闲聊不该花这笔钱）
+//
+// 安全约束：异步路径**一律记为 AI 来源**。它是用户没要求过的后台写入，因此
+// 永远不能覆盖用户自己填/亲口说过的字段——命中的字段会被写入层拒绝并如实回传。
+// 用户想改自己的画像，走设置页或对话里明确说（那条走工具路径，userStated=true）。
+// ============================================================================
+
+const profileExtractSchema = z.object({
+  userMessage: z.string().min(1).max(2000),
+  /** 顾问本轮是否已自己调用过 update_user_profile（前端从 done 事件里拿到） */
+  alreadyWritten: z.boolean().optional(),
+});
+
+router.post('/profile/extract', validate(profileExtractSchema), async (req, res) => {
+  const { userMessage, alreadyWritten } = req.body;
+
+  if (alreadyWritten) {
+    res.json({ success: true, data: { skipped: true, reason: 'advisor 已在对话中落盘', written: [], refused: [] } });
+    return;
+  }
+  if (!hasStableProfileStatement(userMessage)) {
+    res.json({ success: true, data: { skipped: true, reason: '未命中稳定画像自述', written: [], refused: [] } });
+    return;
+  }
+
+  try {
+    const { updates } = await extractProfileUpdates(userMessage);
+    const written: string[] = [];
+    const refused: Array<{ field: string; reason: string }> = [];
+    const logged: Array<{ field: string; logId: number }> = [];
+    const applied: Array<{ field: string; value: any; evidence?: string }> = [];
+
+    for (const u of updates) {
+      // 每条单独写：evidence 是逐字段的来源依据，合并写就只剩一个依据了
+      const { patch, changed, invalid } = normalizeProfilePatch({ [u.field]: u.value });
+      if (changed.length === 0) {
+        if (invalid.length > 0) console.log(`[AI] 画像抽取丢弃字段 ${u.field}: ${invalid.join('；')}`);
+        continue;
+      }
+      const r = updateUserProfileInDb(req.user!.id, patch, {
+        source: 'ai',
+        evidence: u.evidence,
+        origin: 'extract',
+      });
+      written.push(...r.written);
+      refused.push(...r.refused);
+      logged.push(...r.logged);
+      for (const f of r.written) applied.push({ field: f, value: (patch as any)[f], evidence: u.evidence });
+    }
+
+    console.log(`[AI] 回合后画像抽取: 候选 ${updates.length}，写入 ${written.length}${refused.length ? `，拒绝 ${refused.length}` : ''}`);
+    res.json({ success: true, data: { skipped: false, written, refused, logged, applied } });
+  } catch (e: any) {
+    // 抽取失败不该影响用户已经拿到的回答
+    console.warn('[AI] 回合后画像抽取失败（不影响对话）:', e.message);
+    res.json({ success: true, data: { skipped: true, reason: `抽取失败: ${e.message}`, written: [], refused: [] } });
+  }
+});
+
+router.get('/profile/log', (req, res) => {
+  const raw = Number(req.query.limit);
+  const limit = Number.isFinite(raw) && raw > 0 ? raw : 30;
+  res.json({ success: true, data: listProfileWriteLog(req.user!.id, limit) });
+});
+
+const profileUndoSchema = z.object({ logId: z.number().int().positive() });
+
+router.post('/profile/undo', validate(profileUndoSchema), (req, res) => {
+  const result = undoProfileWrite(req.user!.id, req.body.logId);
+  if (!result.restored) {
+    throw new AppError(ErrorCode.INVALID_REQUEST, result.error || '撤销失败', 400);
+  }
+  res.json({ success: true, data: { field: result.field, profile: loadUserProfile(req.user!.id) } });
 });
 
 // ============================================================================
@@ -357,7 +485,56 @@ router.post('/recommend-feedback', validate(recommendationFeedbackSchema), (req,
 router.get('/recommend-feedback', (req, res) => {
   const raw = Number(req.query.limit);
   const limit = Number.isFinite(raw) && raw > 0 ? raw : 100;
-  res.json({ success: true, data: listRecommendationFeedback(req.user!.id, limit) });
+  const summary = summarizeRecommendationFeedback(req.user!.id);
+  const decided = summary.wantCount + summary.skipCount;
+  res.json({
+    success: true,
+    data: listRecommendationFeedback(req.user!.id, limit),
+    // 采纳率终于有分母了：服务端每次推荐都写 action='shown'，想读/跳过按同窗口统计
+    stats: {
+      shown: summary.shownCount,
+      want: summary.wantCount,
+      skip: summary.skipCount,
+      decided,
+      wantRate: summary.shownCount > 0 ? Number((summary.wantCount / summary.shownCount).toFixed(3)) : null,
+    },
+  });
+});
+
+// ============================================================================
+// 对话历史 — AI 顾问的会话记忆落到 SQLite
+//
+// conversations 表建好很久了（还带两个索引），但全仓没有写入方：前端把历史存在
+// localStorage、只留最后 10 轮，换设备或清缓存就归零，"下次推荐围绕这个目标"
+// 是句空话。这里补上读写口，一个用户一个 type 只保留一条会话。
+// ============================================================================
+
+const conversationTypeSchema = z.enum(['ai_advisor', 'reading_assistant', 'book_qa']);
+
+router.get('/conversation', (req, res) => {
+  const type = conversationTypeSchema.parse(req.query.type || 'ai_advisor');
+  const bookId = typeof req.query.bookId === 'string' && req.query.bookId ? req.query.bookId : null;
+  res.json({ success: true, data: loadConversation(req.user!.id, type, bookId) });
+});
+
+const saveConversationSchema = z.object({
+  type: conversationTypeSchema,
+  bookId: z.string().max(64).nullable().optional(),
+  // 内容形状由调用方决定：AI 顾问存的是整轮对话（含推荐卡片数据），
+  // 不是扁平的 role/content，所以这里只约束条数，不约束元素内部结构
+  messages: z.array(z.any()).max(200),
+});
+
+router.put('/conversation', validate(saveConversationSchema), (req, res) => {
+  const { type, bookId, messages } = req.body;
+  const saved = saveConversation(req.user!.id, type, messages, bookId ?? null);
+  res.json({ success: true, data: { id: saved.id, updatedAt: saved.updatedAt, count: messages.length } });
+});
+
+router.delete('/conversation', (req, res) => {
+  const type = conversationTypeSchema.parse(req.query.type || 'ai_advisor');
+  const bookId = typeof req.query.bookId === 'string' && req.query.bookId ? req.query.bookId : null;
+  res.json({ success: true, data: { deleted: clearConversation(req.user!.id, type, bookId) } });
 });
 
 // 流式生成书籍解读
@@ -493,6 +670,26 @@ router.post('/profile/stream', validate(profileSchema), async (req, res) => {
     const ctx = createAgentContext(req.user!.id);
     console.log('[AI] profile/stream 开始, books:', req.body.totalBooks);
     const result = await analyzeUserProfileStream(ctx, req.body, sseHandlers(res, signal));
+
+    // 写回 ai_analysis：这个端点的生成能力与设置页的展示位都已就绪，唯独没有人
+    // 把它写进 user_profiles —— 于是真实数据里 ai_analysis 恒为 NULL，注入画像时
+    // 永远少"AI分析/盲区/建议方向"这三行（恰恰是最能改变推荐口吻的三行）。
+    // 字段先归一化再落库：buildProfileBlock 会直接 .join 盲区数组，脏形状会让推荐端点崩。
+    if (result && typeof result === 'object') {
+      try {
+        updateUserProfileInDb(req.user!.id, {
+          aiAnalysis: {
+            inferredLevel: result.inferredLevel || result.readingLevel || ctx.userProfile?.readingLevel || 'beginner',
+            readingPattern: result.readingPattern || result.pattern || '',
+            blindSpots: Array.isArray(result.blindSpots) ? result.blindSpots : [],
+            recommendedFocus: result.recommendedFocus || result.focus || '',
+            lastUpdated: new Date().toISOString(),
+          },
+        }, { source: 'ai', evidence: 'AI 阅读结构分析（用户主动触发）' });
+      } catch (persistErr: any) {
+        console.warn('[AI] 画像分析写回失败（不影响本次响应）:', persistErr.message);
+      }
+    }
     writeSSE(res, { type: 'done', data: result });
     res.end();
   } catch (error: any) {
