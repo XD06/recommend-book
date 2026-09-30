@@ -10,11 +10,12 @@ import {
   Info,
   UserCircle,
   FloppyDisk,
+  Brain,
 } from '@phosphor-icons/react';
 import { Card, CardHeader, CardContent, CardFooter } from './Card';
 import { Button } from './Button';
 import { Book, BookStatus, ReadingLevel, UserProfile } from '../types';
-import { analyzeUserProfileStream, fetchProfileWriteLog, undoProfileWrite, ProfileWriteLogItem } from '../services/geminiService';
+import { analyzeUserProfileStream, fetchProfileWriteLog, undoProfileWrite, ProfileWriteLogItem, fetchMemories, rejectMemory, restoreMemory, MemoryItem } from '../services/geminiService';
 import { fetchLibraryStats } from '../services/bookService';
 
 interface DataManagementProps {
@@ -51,6 +52,15 @@ const PROFILE_FIELD_LABELS: Record<string, string> = {
   preferredCategories: '偏好分类',
   dailyReadingTime: '每日阅读时间',
   nickname: '称呼',
+};
+
+/** 记忆类别的中文标签（与后端注入时用的标签保持一致） */
+const MEMORY_KIND_LABELS: Record<string, string> = {
+  fact: '事实',
+  preference: '偏好',
+  constraint: '禁忌',
+  goal: '目标',
+  event: '有时限的事',
 };
 
 /** 画像取值的展示形式（数组按顿号连、分钟带单位） */
@@ -103,6 +113,44 @@ export const DataManagement: React.FC<DataManagementProps> = ({
       await loadProfileLog();
     } finally {
       setUndoingId(null);
+    }
+  };
+
+  // ---------------------------------------------------------------- 长期记忆
+  /** AI 记下的事实/偏好/禁忌/约定。与画像是两回事，所以单独一块管理。 */
+  const [memories, setMemories] = useState<MemoryItem[]>([]);
+  const [showRejected, setShowRejected] = useState(false);
+  const [busyMemoryId, setBusyMemoryId] = useState<number | null>(null);
+
+  const loadMemories = React.useCallback(async (withRejected = false) => {
+    try {
+      const active = await fetchMemories('active', 100);
+      const rejected = withRejected ? await fetchMemories('rejected', 100) : [];
+      setMemories([...active, ...rejected]);
+    } catch {
+      // 拉不到就不显示这一块
+    }
+  }, []);
+
+  useEffect(() => { void loadMemories(showRejected); }, [loadMemories, showRejected]);
+
+  const handleRejectMemory = async (id: number) => {
+    setBusyMemoryId(id);
+    try {
+      await rejectMemory(id);
+      await loadMemories(showRejected);
+    } finally {
+      setBusyMemoryId(null);
+    }
+  };
+
+  const handleRestoreMemory = async (id: number) => {
+    setBusyMemoryId(id);
+    try {
+      await restoreMemory(id);
+      await loadMemories(showRejected);
+    } finally {
+      setBusyMemoryId(null);
     }
   };
 
@@ -465,6 +513,78 @@ export const DataManagement: React.FC<DataManagementProps> = ({
           </Card>
         </motion.div>
       )}
+
+      {/* AI 的记忆 —— 没有槽位的事实/偏好/禁忌/约定，与画像分开管理 */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.18, ease: [0.23, 1, 0.32, 1] }}
+      >
+        <Card>
+          <CardHeader
+            title="AI 的记忆"
+            subtitle="AI 在对话里记下的事实、偏好、禁忌与约定。删除是终态：它不会再出现在推荐里，也不会被自动记回来"
+            icon={<Brain className="w-5 h-5 text-accent-600" />}
+          />
+          <CardContent className="space-y-3">
+            {memories.length === 0 ? (
+              <p className="text-sm text-zinc-400">
+                还没有记下任何事。当你在对话里说到稳定的偏好或禁忌（例如"我不看成功学"），AI 会记下来并在这里列出。
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {memories.map((m) => (
+                  <li key={m.id} className="flex items-start gap-2 rounded-lg border border-zinc-100 bg-zinc-50 px-3 py-2">
+                    <span className={[
+                      'mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium',
+                      m.status === 'rejected' ? 'bg-zinc-200 text-zinc-500'
+                        : m.kind === 'constraint' ? 'bg-rose-50 text-rose-700'
+                        : m.kind === 'preference' ? 'bg-indigo-50 text-indigo-700'
+                        : 'bg-amber-50 text-amber-700',
+                    ].join(' ')}>
+                      {MEMORY_KIND_LABELS[m.kind] || m.kind}
+                    </span>
+                    <div className="min-w-0 flex-1 text-xs leading-relaxed">
+                      <p className={m.status === 'rejected' ? 'text-zinc-400 line-through' : 'text-zinc-700'}>
+                        {m.content}
+                      </p>
+                      <p className="text-zinc-400">
+                        {m.source === 'user' ? '你说的' : 'AI 记录的'}
+                        {m.evidence && ` · 依据“${m.evidence}”`}
+                        {m.expiresAt && ` · ${m.expiresAt.slice(0, 10)} 到期`}
+                        {` · ${new Date(m.createdAt).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                    {m.status === 'rejected' ? (
+                      <button
+                        onClick={() => handleRestoreMemory(m.id)}
+                        disabled={busyMemoryId === m.id}
+                        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:bg-zinc-100 disabled:opacity-50"
+                      >
+                        恢复
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleRejectMemory(m.id)}
+                        disabled={busyMemoryId === m.id}
+                        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                      >
+                        {busyMemoryId === m.id ? '删除中…' : '删除'}
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button
+              onClick={() => setShowRejected((v) => !v)}
+              className="text-[11px] text-zinc-400 hover:text-zinc-600"
+            >
+              {showRejected ? '隐藏已删除的' : '显示已删除的（可恢复）'}
+            </button>
+          </CardContent>
+        </Card>
+      </motion.div>
 
       {/* Export Section */}
       <motion.div

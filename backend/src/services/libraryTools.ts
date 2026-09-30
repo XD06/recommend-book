@@ -39,6 +39,12 @@ import {
   loadUserLibrary,
   loadUserProfile,
   summarizeRecommendationFeedback,
+  addMemory,
+  listMemories,
+  selectRelevantMemories,
+  touchMemoriesUsed,
+  MEMORY_KINDS,
+  MAX_ACTIVE_MEMORIES,
   UserProfilePatch,
 } from '../db/database';
 import { computeLibraryStats, formatCategoryDistribution, resolveUserRating, resolveDoubanRating } from './libraryStats';
@@ -123,14 +129,18 @@ function setCachedToolResult(
 /** 判断是否为写工具（写工具不缓存） */
 /** 写工具必须排除在请求级工具缓存之外，否则会读到上一轮的旧结果 */
 export function isWriteTool(toolName: string): boolean {
-  return toolName === 'update_book_status' || toolName === 'update_user_profile';
+  return toolName === 'update_book_status' || toolName === 'update_user_profile' || toolName === 'remember';
 }
 
 /**
  * 画像类工具：它们证明模型看了"人"，但没看书目。
  * 书库硬闸门不认它们，否则一次 get_user_profile 就能蒙过闸门。
+ * 记忆类同理：查记忆不等于查过书目。
  */
-const PROFILE_TOOLS = new Set(['get_user_profile', 'update_user_profile']);
+const PROFILE_TOOLS = new Set([
+  'get_user_profile', 'update_user_profile',
+  'remember', 'recall_memory',
+]);
 
 /**
  * 这次工具调用是否真的查过用户书目 — 供 Agent 循环统计"有没有查过书库"。
@@ -294,6 +304,53 @@ export const LIBRARY_TOOLS = [
       },
     },
   },
+
+  // ==========================================================================
+  // 长期记忆 —— 没有槽位的事实／偏好／禁忌／约定
+  //
+  // 与画像是两件事：画像是有槽位的稳定属性（水平/目标/偏好分类/每日时长）；
+  // 记忆是"我在准备考试""我不看成功学"这类塞不进槽位的东西。
+  // 记忆**不得**回写画像字段，画像也不该塞进记忆——分工写死，避免来源保护被绕过。
+  // ==========================================================================
+  {
+    type: 'function' as const,
+    function: {
+      name: 'remember',
+      description: '长期记住一件事（写操作，跨会话生效）。用于用户**明确要求记住**的内容，'
+        + '或用户说出的、塞不进画像字段的稳定信息（偏好、禁忌、约定、正在准备的考试等）。'
+        + '不要记：能从书库查到的（藏书量、分类），一次性的情绪，你自己的推测。'
+        + 'evidence 必填（用户原话片段）；userStated 只有"用户明确说了或要求记住"才传 true，'
+        + '你自己判断值得记的传 false。内容要一句话说清，不要抄整段对话。',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', description: '要记住的事，一句话（≤200字），主语是用户。例：不看成功学类书籍' },
+          kind: { type: 'string', enum: ['fact', 'preference', 'constraint', 'goal', 'event'], description: 'fact=事实、preference=偏好、constraint=禁忌/约束、goal=长期目标、event=有时限的事' },
+          evidence: { type: 'string', description: '必填：用户原话片段（≤120字）' },
+          userStated: { type: 'boolean', description: '用户是否明确说了/要求记住。不确定传 false' },
+          expiresAt: { type: 'string', description: 'ISO 日期。仅 event 类需要（如"下个月要考试"→考试日期）；不传则按 60 天后过期' },
+        },
+        required: ['content', 'kind', 'evidence'],
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'recall_memory',
+      description: '检索此前记下的长期记忆（读操作）。当你不确定用户的偏好、禁忌或此前约定过什么时用它，'
+        + '而不是凭印象猜。返回与查询最相关的若干条，含类别与依据。'
+        + '注入到上下文里的通常只有最相关的 3 条，所以需要更多背景时主动查。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: '要回忆的主题，例如"读书禁忌""最近在准备什么"' },
+          limit: { type: 'number', description: '最多返回几条，默认 8，上限 20' },
+        },
+        required: ['query'],
+      },
+    },
+  },
 ];
 
 /** 书库工具名集合 — 供"这次回答有没有查过书库"的判定使用 */
@@ -422,6 +479,10 @@ function describeToolCall(toolName: string, args: Record<string, any>): string {
     }
     case 'update_user_profile':
       return '更新阅读画像';
+    case 'remember':
+      return `记住一件事${args.kind ? `（${args.kind}）` : ''}`;
+    case 'recall_memory':
+      return args.query ? `回忆关于「${String(args.query).slice(0, 12)}」的事` : '回忆此前记下的事';
     default:
       return toolName;
   }
@@ -484,6 +545,12 @@ export function executeLibraryTool(
         break;
       case 'update_user_profile':
         result = JSON.stringify(updateUserProfile(args, ctx));
+        break;
+      case 'remember':
+        result = JSON.stringify(rememberMemory(args, ctx));
+        break;
+      case 'recall_memory':
+        result = JSON.stringify(recallMemory(args, ctx));
         break;
       default:
         result = JSON.stringify({ error: `未知工具: ${toolName}` });
@@ -1440,6 +1507,108 @@ function updateUserProfile(args: Record<string, any>, ctx: AgentContext): any {
   };
 }
 
+/**
+ * 长期记忆：写入。
+ *
+ * 与画像写入的区别：画像有槽位、有来源保护；记忆是自由文本，只做三件事保证它不被玩坏
+ * —— 必须带用户原话依据、同内容去重、**被用户删过的内容永不复活**。
+ */
+function rememberMemory(args: Record<string, any>, ctx: AgentContext): any {
+  const content = String(args.content || '').trim();
+  const kind = (MEMORY_KINDS as readonly string[]).includes(args.kind) ? String(args.kind) : null;
+  const evidence = typeof args.evidence === 'string' ? args.evidence.trim() : '';
+  const userStated = args.userStated === true;
+
+  if (!content) return { success: false, message: 'content 不能为空' };
+  if (!kind) return { success: false, message: `kind 必须是 ${MEMORY_KINDS.join('/')} 之一`, received: args.kind ?? null };
+  if (!evidence) {
+    return {
+      success: false,
+      message: 'evidence 必填',
+      hint: '必须引用用户原话片段：它是事后判断这条记忆真伪的唯一凭据，没有它就不允许写入',
+    };
+  }
+
+  const result = addMemory(ctx.userId, {
+    kind,
+    content,
+    evidence,
+    source: userStated ? 'user' : 'ai',
+    origin: 'explicit',
+    confidence: userStated ? 0.95 : 0.6,
+    expiresAt: typeof args.expiresAt === 'string' && args.expiresAt ? args.expiresAt : null,
+  });
+
+  if (!result.added) {
+    const hints: Record<string, string> = {
+      duplicate: '这条已经记过了，不要重复记',
+      rejected_before: '用户此前**删除过**同样内容的记忆。删除是终态——不要再记它，也不要主动提起',
+      limit_reached: `这个用户的活跃记忆已达上限（${MAX_ACTIVE_MEMORIES} 条）。改为用 recall_memory 看现有记忆，并提示用户整理；不要继续新增`,
+      empty: 'content 为空',
+    };
+    return { success: false, reason: result.reason, message: hints[result.reason || 'empty'] };
+  }
+
+  // 记忆变了，本轮已缓存的 recall_memory 结果作废
+  ctx.toolCache.clear();
+  const m = result.memory!;
+  return {
+    success: true,
+    message: `已记住：${m.content}`,
+    memory: { id: m.id, kind: m.kind, content: m.content, source: m.source, expiresAt: m.expiresAt },
+    note: userStated
+      ? '这条记为"用户所说"，会展示给用户并可删除'
+      : '这条记为"你的判断"，会展示给用户并可删除',
+  };
+}
+
+/** 长期记忆：检索。相关度不够时退回最近若干条，避免"明明记过却查不到" */
+function recallMemory(args: Record<string, any>, ctx: AgentContext): any {
+  const query = String(args.query || '').trim();
+  const limit = Math.min(Math.max(Number(args.limit) || 8, 1), 20);
+
+  // 检索时放宽单条长度上限：这里是模型主动查，不是常驻注入
+  const picked = selectRelevantMemories(ctx.userId, query, limit, 4000);
+  const rows = picked.length > 0 ? picked : listMemories(ctx.userId, { status: 'active', limit });
+  if (rows.length === 0) return { total: 0, memories: [], note: '没有记下任何相关的事' };
+
+  touchMemoriesUsed(ctx.userId, rows.map((r) => r.id));
+  return {
+    total: rows.length,
+    memories: rows.map((r) => ({
+      id: r.id, kind: r.kind, content: r.content,
+      evidence: r.evidence, expiresAt: r.expiresAt, createdAt: r.createdAt,
+    })),
+  };
+}
+
+/** 记忆类别的中文标签，注入时用 */
+const MEMORY_KIND_LABELS: Record<string, string> = {
+  fact: '事实', preference: '偏好', constraint: '禁忌/约束', goal: '目标', event: '有时限的事',
+};
+
+/**
+ * 注入用的长期记忆块 —— **检索式，不是全量**。
+ *
+ * 上限写死：≤3 条、内容合计 <500 字符（`selectRelevantMemories` 的 maxChars 管这个）。
+ * 理由是量级：画像 4 个字段 160 字符可以无脑全发，记忆会长到几百条；全量注入会稀释
+ * 指令，而"370 行提示词里第 35 行那句话被稀释到 0 次触发"是这个仓库付过学费的教训。
+ */
+export function buildMemoryBlock(userId: string, query: string): string {
+  const picked = selectRelevantMemories(userId, query, 3, 500);
+  if (picked.length === 0) return '';
+
+  touchMemoriesUsed(userId, picked.map((r) => r.id));
+  const lines = picked.map((r) => {
+    const exp = r.expiresAt ? `（${r.expiresAt.slice(0, 10)} 到期）` : '';
+    const ev = r.evidence ? `，依据"${r.evidence.slice(0, 40)}"` : '';
+    return `- [${MEMORY_KIND_LABELS[r.kind] || r.kind}] ${r.content.slice(0, 120)}${exp}${ev}`;
+  });
+  return `\n\n【长期记忆】以下是此前记下的、与你这次问题相关的事（可能过时，与用户当前说法冲突时以当前为准；不要当作硬要求复述）：\n`
+    + lines.join('\n')
+    + `\n需要更多背景时可以调用 recall_memory。\n`;
+}
+
 // ============================================================================
 // 库概览生成 — 常驻上下文（紧凑格式 + 阅读品味画像）
 // ============================================================================
@@ -1588,8 +1757,13 @@ function generateCompactTasteProfile(library: Book[]): string | null {
   } else {
     // 0 本读完 + 无任何进度：这是"还没开始记录阅读"，不是"读不完"。
     // 概述是常驻上下文，这句话说错会污染每一次推荐。
-    profile += `阅读行为: 尚无记录（0 本读完、无进度数据）——这是一份刚建立的书目，`
-      + `不要推断成"不追求读完""停留在舒适区""购书冲动"，也不要因此减少推荐\n`;
+    //
+    // 措辞从"别用这几个词"改成"别做这件事"：原来只列了"不追求读完/停留在舒适区/购书冲动"，
+    // 结果实测模型换了个说法继续判——"这很像囤积式阅读：用收藏代替阅读，用广度代替深度"。
+    // 枚举永远列不全，所以直接禁止"从藏书推断阅读习惯"这一类行为，并点名几个典型说法。
+    profile += `阅读行为: 尚无记录（0 本读完、无进度数据）——这是一份刚建立的书目。`
+      + `**不要从藏书推断任何阅读习惯**：包括"不追求读完""停留在舒适区""购书冲动""囤积式阅读"` +
+      `"用收藏代替阅读""广度代替深度""启动困难"这类判断，都不许下。也不要因此减少推荐\n`;
   }
 
   profile += `阅读广度: ${categoryCount}个领域，`;

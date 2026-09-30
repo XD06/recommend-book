@@ -32,7 +32,7 @@ graph TD
 | `services/`（前端） | API 客户端 + Token 管理 | Token 存 localStorage，每次请求带 `Authorization` 头；`API_BASE` 只在 `authService.ts` 定义并导出，其余模块从它导入。两个客户端按域分工：`geminiService.ts`（历史命名，实为 `/api/ai/*` + SSE 解析）管 AI，`librarianService.ts` 管批量入库与分类元数据（`/api/books/batch`、`/api/books/auto-categorize`、`/api/profile/category-meta`），`useBookLibrary` 直接依赖后者 |
 | `hooks/` | 流式请求、防抖、打字机 | 纯逻辑复用层，可调 `services/` |
 | `backend/src/routes/` | HTTP 端点 | books / profile / ai / douban 四个路由挂载时统一 `router.use(requireAuth)`；仅 `/api/auth/register`、`/api/auth/login`、`/api/health` 免鉴权 |
-| `backend/src/services/` | 业务逻辑 | `aiService`（AI 调用 + Agent 循环）、`doubanService`（豆瓣数据源）、`libraryTools`（Agent 的 10 个书库工具 + 常驻书库概览）、`recommendValidation`（推荐输出回传前的 bookId 清洗）、`libraryStats`（统计口径唯一实现） |
+| `backend/src/services/` | 业务逻辑 | `aiService`（AI 调用 + Agent 循环）、`doubanService`（豆瓣数据源）、`libraryTools`（Agent 的 12 个书库/记忆工具 + 常驻书库概览 + 长期记忆检索注入）、`recommendValidation`（推荐输出回传前的 bookId 清洗与站外去重）、`libraryStats`（统计口径唯一实现） |
 | `backend/src/prompts/` | 提示词模板 | 与 AI 功能一一对应，与路由代码分离 |
 | `backend/src/db/database.ts` | SQLite 建表与访问 | 所有表结构集中于此，`CREATE TABLE IF NOT EXISTS`；`BookRow` / `rowToBook` / `bookToParams` / `loadUserLibrary` 等行级读写辅助也在这里，`books` 路由与 Agent 工具共用同一份，不再各写一套。画像同理：`loadUserProfile` / `updateUserProfileInDb` 被 `GET/PUT /api/profile` 与 Agent 的 `update_user_profile` 共用；`addRecommendationFeedback` / `listRecommendationFeedback` 是推荐采纳反馈的唯一读写口 |
 
@@ -49,7 +49,7 @@ graph TD
 **书籍导入**：`IngestionWizard` → `GET /api/douban/search` 搜豆瓣候选 → 用户选定版本（不自动选）→ `POST /api/ai/classify` AI 补全分类/难度 → 批量保存。
 
 **AI 流式调用（Agent 两阶段）**：`POST /api/ai/*/stream` → 路由先 `createAgentContext(req.user!.id)` 从 SQLite 载入该用户的书库与画像 → `aiService.callAgentStream({ systemPrompt, userPrompt, ctx, handlers, ... })`（原先 13 个位置参数已收敛成这一个 options 对象）：
-1. **思考阶段**（静默、非流式）：多轮工具调用循环，模型通过 `libraryTools` 查询书库（`search_library`、`get_book_details`、`get_reading_taste_profile`、`update_book_status`、`update_user_profile` 等 10 个工具），最多 4 轮（`MAX_ROUNDS` 硬编码在 `callAgentStream` 内）后截断。**4 而不是 3**：101 本以上概览不再注入完整书名，模型必须先查工具才能给出真实 bookId，实测 413 本库上"从书架挑三本"恰好用满 3 轮——第 3 轮既是查询轮又是收敛轮，再触发硬闸门就没有余量了。推荐端点额外带 `requireLibraryTool`：模型声称给出了 `libraryMatches` 却一次书目工具都没调，就追加一条纠正消息补 1 轮强制查证（上限 1 轮，不影响其它端点）；
+1. **思考阶段**（静默、非流式）：多轮工具调用循环，模型通过 `libraryTools` 查询书库与记忆（`search_library`、`get_book_details`、`get_reading_taste_profile`、`update_book_status`、`update_user_profile`、`remember`、`recall_memory` 等 12 个工具；配了 Exa 再 +2 个联网工具），最多 4 轮（`MAX_ROUNDS` 硬编码在 `callAgentStream` 内）后截断。**4 而不是 3**：101 本以上概览不再注入完整书名，模型必须先查工具才能给出真实 bookId，实测 413 本库上"从书架挑三本"恰好用满 3 轮——第 3 轮既是查询轮又是收敛轮，再触发硬闸门就没有余量了。推荐端点额外带 `requireLibraryTool`：模型声称给出了 `libraryMatches` 却一次书目工具都没调，就追加一条纠正消息补 1 轮强制查证（上限 1 轮，不影响其它端点）；
 2. **表达阶段**（流式）：基于工具收集的上下文，SSE 推送给用户。
 
 SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
@@ -63,6 +63,10 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 - **AI 写库直接落 SQLite，`book_update` 是反向通知**：`update_book_status` 立刻按 `user_id` 分区 `UPDATE`，并清空本次请求的工具缓存，让后续工具读到新值。`book_update` 事件的作用不再是"让前端去写库"，而是"告知客户端它那份内存副本已过期"——`App.tsx` 监听 `aiBookUpdate` 把改动 patch 回 `useBookLibrary`。**漏接不会丢 AI 的写入，但客户端下一次防抖全量保存会把它冲掉**，所以 `routes/ai.ts` 的 `sseHandlers()` 对全部流式端点一律接上 `onBookUpdate`，不做取舍。
 - **非流式端点仍可自带书库**：`/classify`、`/recommend` 等只走 `callAI`、不带工具循环、改不了库，客户端传来的 `library` 在那里是无害的请求数据，未纳入上述契约。
 - **推荐结果在回传前对齐真实书库**：`recommendValidation.validateAdvisorJson` 逐条核对 `libraryMatches` 的 `bookId`，对不上就用模型同时给出的 `title` 反查修复，修不掉才丢弃，并把 `kept / repaired / dropped / droppedTitles` 塞进响应的 `matchValidation`。这一步有效的前提是**客户端渲染的是 `done` 里那份返回值而不是 chunk 原文**；提示词因此强制要求每条 `libraryMatches` 带 `title`，少这个字段就无从自愈。`externalMatches` 是站外新书、天然没有 bookId，不清洗。
+- **长期记忆与画像分工写死，不许互相回写**：`user_memories` 存**没有槽位**的事实／偏好／禁忌／约定（"我在准备考试""我不看成功学"）；`user_profiles` 存有槽位的稳定属性。记忆**不得**写进画像字段（否则来源保护被绕过），能从书库查到的（藏书量、分类）也不该记。
+  - 写入两条路：`remember` 工具（用户明确要求或陈述 → `source='user'`）与回合后抽取（用户没要求过的后台写入 → 一律 `source='ai'`）。两者都必须带 `evidence`（用户原话）；同内容去重；**被用户删过的内容永不复活**（`status='rejected'` 是墓碑，同时挡住同内容再次写入）。
+  - 读取是**检索式注入，不是全量**：`selectRelevantMemories` 用二元字组重叠打分（中文没有空格）。`constraint` 有意加权——踩到用户明说过的禁忌，代价高于漏掉一条偏好，所以它即使与当前问题字面无关也会被带上，但**限流 2 条**以留槽位给真正相关的内容。硬上限：≤3 条、内容合计 <500 字符（实测 155 字符）。`recall_memory` 工具让模型主动查更多。
+  - 为什么必须限流：画像 4 个字段 160 字符可以无脑全发，记忆会长到几百条；全量注入会稀释指令——"370 行提示词里第 35 行那句话被稀释到 0 次触发"是这个仓库付过学费的教训。活跃上限 `MAX_ACTIVE_MEMORIES = 200`，到顶拒绝新增并让模型去合并。
 - **画像写入只有一个函数**：`updateUserProfileInDb` 只写 `!== undefined` 的字段，REST `PUT /api/profile` 与 Agent 的 `update_user_profile` 共用它，所以调用方必须只发自己要改的字段。整份旧快照 PUT 回去会把 AI 刚写进去的字段按旧值冲掉——设置页表单因此改成"只发自己拥有的 4 个字段 + 进页时重新 `fetchProfile`"。
 - **画像字段带来源，AI 的推测不得覆盖用户的期望**（`profile_field_meta` 表，逐字段一行；加新表不受"无迁移系统"限制）：
   - `source: 'user'` —— 用户在设置页填的（`via: 'form'`）或用户在对话里明确说的（`via: 'conversation'`，`evidence` 存原话片段）。**这是用户的期望：可能不够细、不够准，但它是权威**。`updateUserProfileInDb` 在 `source: 'ai'` 时对这些字段一律拒绝，命中的进 `refused` 原样回给模型，让它如实说"这条是你自己定的，我改不了"，而不是静默失败或反复重写。
@@ -71,7 +75,7 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
   - 注入时（`buildProfileBlock`）分四档渲染：**用户自己定的**（不要覆盖）／**AI 记录推断的**（是推测，可修正）／**数据库默认值**（有值却无来源记录，如注册时写的 `beginner`，明确标注"用户从未确认过"）／**尚未设置**（可以问）。`get_user_profile` 工具同样按 `userStated` / `aiRecorded` / `unset` 分组返回，模型无法把两类混着看。
 - **画像落盘有两条路径，且都不依赖模型自觉**：
   1. **对话中**（工具路径）：`hasStableProfileStatement()` 从用户消息里识别"我的水平/我的目标是/我每天能读 40 分钟/我偏好…"这类自述，命中才给 `callAgentStream` 传 `requireProfileWrite`；模型一轮下来一次 `update_user_profile` 都没调就追加 1 轮纠正（落盘指令同时压到用户提示词尾部，理由同模式闸门：写在 370 行系统提示第 35 行会被稀释——**实测 27 次真实请求里模型写库 0 次**）。判据是"尝试"而非"成功"：写入被拒（用户自己填过）也是合法结果。
-  2. **回合后异步**（`POST /api/ai/profile/extract`）：顾问回答完，前端再单独问一次"用户这句话里有没有稳定的画像信息"。两道零成本闸门先挡（顾问本轮已落盘 → 跳过；未命中自述正则 → 跳过），命中才花一次廉价调用。**这条路一律记为 `source: 'ai'`**——它没被用户要求过，因此覆盖不了用户自己定的字段。两条路共用 `normalizeProfilePatch()` 做字段校验（各写一份必然漂移）。
+  2. **回合后异步**（`POST /api/ai/extract`）：顾问/管家回答完，前端再单独问一次"用户这句话里有没有稳定信息"。两道零成本闸门先挡（本轮已落盘 → 跳过；未命中自述正则 → 跳过），命中才花一次廉价调用。它同时抽**画像字段**与**长期记忆**，且两条都一律记为 `source: 'ai'`——它们没被用户要求过，因此画像覆盖不了用户自己定的字段、记忆也会被标成"AI 记录的"。两条路共用 `normalizeProfilePatch()` 做字段校验（各写一份必然漂移）。
 - **画像写入可撤销**：追加式 `profile_write_log` 记下每次写入的 `prev_value`/`next_value`/`prev_source`/`origin`（form|conversation|tool|extract），撤销即精确还原。两个边界：`reading_level` 是 NOT NULL，撤销回到默认值并删来源行；写入前无来源行时撤销要**删除**来源行而不是写空值（否则该字段会被误判成"AI 记录过"）。对话里弹提示条、设置页有完整历史与逐条撤销。
 - **采纳反馈只有显式点击 + 服务端展示记录**：`POST/GET /api/ai/recommend-feedback` 读写 `recommendation_feedback`（想读 / 跳过）。同一本书改选是**追加新行**、最新一条即最终态度，不做 UPSERT。`requestId` 由**服务端**在 `/recommend/stream` 里生成、随 `done` 回传，并在同一处写入 `action='shown'` 的展示记录——于是采纳率终于有分母（`GET /recommend-feedback` 的 `stats.wantRate`）。这些信号由 `createAgentContext` 读成 `ctx.feedbackSummary` 注入【采纳反馈】段，**反馈因此真的影响下一次推荐**。
 - **评分是两套量纲，禁止混算**：`books.douban_data.rating_score` / `Book.doubanRating` 是豆瓣 10 分制的大众评分（客观数据）；用户自评 1–5 星存在 `books.user_data.userRating`（JSON，无列因此无需迁移）。取值必须走 `libraryStats` 的 `resolveDoubanRating` / `resolveUserRating`——**历史数据里 `books.rating` 混着两套**（导入期写过豆瓣分：实测 395 条中 393 条 >5、均值 8.43），两个函数按量纲分流，`>5` 一律归豆瓣。把它当"用户评价倾向"算过的后果是模型被告知"这个用户评价偏高、比较宽容"，而真人只亲手评过 2 本。

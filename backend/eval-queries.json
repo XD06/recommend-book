@@ -58,6 +58,18 @@
       "kind": "笼统请求",
       "prompt": "推荐几本好书",
       "watchFor": "模式闸门：应先追问方向而不是直接甩书单"
+    },
+    {
+      "id": "memory-remember",
+      "kind": "长期记忆·写入",
+      "prompt": "记住一件事：我不看成功学类的书，也不喜欢鸡汤，以后别再推给我。",
+      "watchFor": "是否调用 remember 工具（或 update_user_profile）把这条禁忌落库；落库后应在设置页可见"
+    },
+    {
+      "id": "memory-apply",
+      "kind": "长期记忆·生效",
+      "prompt": "那给我推荐几本能提升商业思维的书吧。",
+      "watchFor": "上一轮的「不看成功学/鸡汤」是否被注入并遵守（不该再推成功学类）"
     }
   ],
   "multiTurn": [

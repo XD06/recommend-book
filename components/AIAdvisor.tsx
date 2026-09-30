@@ -2,25 +2,13 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { Book, BookStatus, AdvisorResponse, Recommendation, ReadingMood, MOOD_OPTIONS, getBookCoverUrl, hasBookCover } from '../types';
 import { Button } from './Button';
-import { getRecommendationsStream, sendRecommendationFeedback, RecommendationFeedbackItem, fetchConversation, saveConversation, clearConversationOnServer, extractProfileFromTurn, undoProfileWrite } from '../services/geminiService';
+import { getRecommendationsStream, sendRecommendationFeedback, RecommendationFeedbackItem, fetchConversation, saveConversation, clearConversationOnServer, runPostTurnExtraction, RememberedNote } from '../services/geminiService';
+import { RememberedNoteBanner } from './RememberedNoteBanner';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import {
   Sparkle, PaperPlaneTilt, Plus, Star, Robot, Stack, Lightbulb, Clock, Eye, CheckCircle,
-  BookOpen, Books, Coffee, Trash, BookmarkSimple, Prohibit, Info,
+  BookOpen, Books, Coffee, Trash, BookmarkSimple, Prohibit,
 } from '@phosphor-icons/react';
-
-/** 画像字段的中文名与取值展示，用于"AI 记住了…"提示条 */
-const PROFILE_FIELD_LABELS: Record<string, string> = {
-  readingLevel: '阅读水平',
-  readingGoal: '阅读目标',
-  preferredCategories: '偏好分类',
-  dailyReadingTime: '每日阅读时间',
-};
-const formatProfileValue = (v: any): string => {
-  if (Array.isArray(v)) return v.join('、');
-  if (typeof v === 'number') return `${v} 分钟`;
-  return String(v ?? '');
-};
 
 const fallbackResponse: AdvisorResponse = {
 mode: 'conversation',
@@ -86,9 +74,8 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  /** "AI 刚从这轮对话里记住了什么"——当场可见、可撤销 */
-  const [profileNote, setProfileNote] = useState<{ text: string; logIds: number[]; error?: string } | null>(null);
-  const [undoingNote, setUndoingNote] = useState(false);
+  /** 「AI 刚从这轮对话里记住了什么」——当场可见、可撤销（组件见 RememberedNoteBanner） */
+  const [remembered, setRemembered] = useState<RememberedNote | null>(null);
 
   // 切页会硬重挂载本组件（App 用 key={activeTab}），不中止就遗留一条 SSE 连接。
   // 浏览器对单域名只有 6 条 HTTP/1.1 连接，攒够之后所有接口请求都在队列里等
@@ -237,36 +224,16 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
   };
 
   /**
-   * 回合后抽取：把用户这句话里稳定的画像信息落到 user_profiles。
+   * 回合后抽取：把用户这句话里稳定的信息（画像字段 + 长期记忆）落库。
    * 后端会先过两道零成本闸门（顾问已落盘 / 未命中自述正则），所以这里可以放心调用。
    */
   const runProfileExtraction = async (userMessage: string, alreadyWritten: boolean) => {
-    const r = await extractProfileFromTurn(userMessage, alreadyWritten);
-    if (!r || r.skipped || r.written.length === 0) return;
-    const parts = (r.applied || [])
-      .map((a) => `${PROFILE_FIELD_LABELS[a.field] || a.field}：${formatProfileValue(a.value)}`)
-      .filter(Boolean);
-    setProfileNote({
-      text: parts.join('；') || r.written.join('、'),
-      logIds: (r.logged || []).map((l) => l.logId),
-    });
+    const note = await runPostTurnExtraction(userMessage, alreadyWritten);
+    if (note) setRemembered(note);
   };
 
-  const handleUndoProfileNote = async () => {
-    const ids = profileNote?.logIds ?? [];
-    setUndoingNote(true);
-    try {
-      // 逐条撤销：一次抽取可能写了多个字段，每个字段一行日志
-      for (const id of ids) await undoProfileWrite(id);
-      setProfileNote(null);
-    } catch (e: any) {
-      setProfileNote((prev) => ({ text: prev?.text || '', logIds: ids, error: `撤销失败：${e?.message || '未知错误'}` }));
-    } finally {
-      setUndoingNote(false);
-    }
-  };
-
-  const handleStop = () => {    if (abortRef.current) {
+  const handleStop = () => {
+    if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
@@ -404,36 +371,11 @@ export const AIAdvisor: React.FC<AIAdvisorProps> = ({ books, onSelectBook, onAdd
 
       {/* 底部输入区 — 移动端要抬到 fixed 底部导航之上，否则心境条和输入框被压住 */}
       <div className="sticky bottom-[var(--bottom-nav-h)] md:bottom-0 bg-zinc-50/80 backdrop-blur-md pt-4 pb-4 md:pb-8 -mx-4 px-4 md:mx-0 md:px-0 border-t border-zinc-200/50">
-        {/* AI 刚从这轮对话里记下的画像 —— 必须当场可见且能一键撤销。
+        {/* AI 刚从这轮对话里记下的东西（画像字段 + 长期记忆）—— 必须当场可见且能一键撤销。
             背景：让模型"顺便记住"实测 27 次请求 0 次调用，所以补了回合后异步抽取；
             但没被要求过的后台写入，用户至少要有知情权与反悔权（设置页还有完整历史）。 */}
-        {profileNote && (
-          <div className="mb-3 flex items-start gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2">
-            <Info size={14} className="mt-0.5 shrink-0 text-indigo-500" />
-            <div className="min-w-0 flex-1 text-xs leading-relaxed text-indigo-900">
-              <span className="font-medium">AI 记住了</span>（你随时可以撤）：
-              <span className="text-indigo-800">{profileNote.text}</span>
-              {profileNote.error && <span className="ml-1 text-rose-600">{profileNote.error}</span>}
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {profileNote.logIds.length > 0 && (
-                <button
-                  onClick={handleUndoProfileNote}
-                  disabled={undoingNote}
-                  className="rounded px-2 py-0.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
-                >
-                  {undoingNote ? '撤销中…' : '撤销'}
-                </button>
-              )}
-              <button
-                onClick={() => setProfileNote(null)}
-                className="rounded px-1.5 py-0.5 text-xs text-indigo-400 hover:bg-indigo-100 hover:text-indigo-600"
-                aria-label="关闭"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
+        {remembered && (
+          <RememberedNoteBanner note={remembered} onDone={() => setRemembered(null)} />
         )}
         {/* 心境选择 + 清空对话 — 窄屏单行横滑，避免两行胶囊把输入区顶得太高 */}
         <div className="flex gap-1.5 mb-3 overflow-x-auto no-scrollbar sm:flex-wrap sm:justify-center sm:overflow-visible">

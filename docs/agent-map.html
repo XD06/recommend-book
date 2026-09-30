@@ -144,8 +144,8 @@
     <div class="step" data-layer="ag">
       <div class="dot">3</div>
       <div class="card">
-        <h3><span class="tag t-ag">Agent</span> 组装提示词（<b>每次请求 11.5k token 的固定开销</b>）</h3>
-        <p class="small">详见 <b>B 段</b>。要点：静态部分占 88%，真正属于"你的数据"的只有 12%。</p>
+        <h3><span class="tag t-ag">Agent</span> 组装提示词（<b>每次请求 12.3k token 的固定开销</b>）</h3>
+        <p class="small">详见 <b>B 段</b>。要点：静态部分（system + 工具 schema）占 89%，真正属于"你的数据"的只有 11%。</p>
       </div>
     </div>
 
@@ -222,16 +222,16 @@
   <div class="sechead"><span class="n">B</span><h2>提示词里到底有什么（实测）</h2></div>
   <div class="card">
     <div class="bar">
-      <span class="b-sys" style="width:61%">system 11,250 字符 · 61%</span>
-      <span class="b-tools" style="width:27%">tools 4,998 · 27%</span>
-      <span class="b-usr" style="width:12%">user 2,157 · 12%</span>
+      <span class="b-sys" style="width:57%">system 11,250 字符 · 57%</span>
+      <span class="b-tools" style="width:32%">tools 6,196 · 32%</span>
+      <span class="b-usr" style="width:11%">user 2,211 · 11%</span>
     </div>
-    <div class="scale"><span>0</span><span>合计 18,405 字符 ≈ 11.5k token（不含对话历史与工具结果）</span></div>
+    <div class="scale"><span>0</span><span>合计 19,657 字符 ≈ 12.3k token（不含对话历史与工具结果）</span></div>
     <hr>
     <div class="grid g3">
       <div class="box"><h3>system 11,250</h3><p class="tiny muted">推荐方法论原始模板 9,762 字符（ZPD／认知负荷／交错学习／三本书组合／4 个完整示例）＋ <code>withTools()</code> 附加 1,488 字符（工具说明、联网使用准则、轮次说明）。<br><b>每次请求都要重发一遍。</b></p></div>
-      <div class="box"><h3>tools 4,998</h3><p class="tiny muted">12 个工具的 JSON Schema。这是"描述工具"的成本，与你的数据无关。<br>关掉 EXA 会降到 10 个工具。</p></div>
-      <div class="box"><h3>user 2,157</h3><p class="tiny muted">唯一与"你"有关的部分：书库统计、品味画像、在读书籍、画像，以及用户请求本身。</p></div>
+      <div class="box"><h3>tools 6,196</h3><p class="tiny muted">14 个工具的 JSON Schema，与你的数据无关。关掉 EXA 会降到 12 个。<br><b>代价会被放大</b>：本轮加 <code>remember</code> / <code>recall_memory</code> 后，schema 从 4,998 涨到 6,196 字符——每次请求多付 1,198 字符。</p></div>
+      <div class="box"><h3>user 2,211</h3><p class="tiny muted">唯一与"你"有关的部分：书库统计、品味画像、在读书籍、画像、<b>长期记忆</b>，以及用户请求本身。</p></div>
     </div>
     <hr>
     <h3>user prompt 逐段（段落顺序 = 拼装顺序）</h3>
@@ -243,10 +243,11 @@
         <tr><td class="mono">【难度分布】</td><td class="muted">入门 250 / 进阶 133 / 专家 30</td><td class="n">23</td></tr>
         <tr><td class="mono">【豆瓣评分】</td><td class="muted">393 本收录，均 8.5，<b>标注 10 分制、大众评分、不代表用户偏好</b></td><td class="n">47</td></tr>
         <tr><td class="mono">【用户自评】</td><td class="muted">"暂无 —— 用户还没亲手评分过任何书，不要从豆瓣分推断 TA 的评价倾向"</td><td class="n">45</td></tr>
-        <tr><td class="mono">【阅读品味画像】</td><td class="muted">难度偏好 / 阅读行为 / 阅读广度 / 偏好作者 / 藏书结构（<b>无行为数据时不推断人格</b>）</td><td class="n">183</td></tr>
+        <tr><td class="mono">【阅读品味画像】</td><td class="muted">难度偏好 / 阅读行为 / 阅读广度 / 偏好作者 / 藏书结构（<b>无行为数据时禁止从藏书推断任何阅读习惯</b>）</td><td class="n">237</td></tr>
         <tr><td class="mono">【在读书籍】</td><td class="muted">4 本含进度，标题里写明"进度 0% 只说明还没记录，不代表没在读"</td><td class="n">766</td></tr>
         <tr><td class="mono">【书库索引】</td><td class="muted"><b>未注入书名</b>（&gt;300 本档），并明确要求"必须先用工具拿候选书目，禁止凭分类名臆测"</td><td class="n">132</td></tr>
         <tr><td class="mono">【用户画像】</td><td class="muted">未设置 → 注入"不要假设 TA 的水平（默认值 beginner 不是用户说的）"</td><td class="n">160</td></tr>
+        <tr><td class="mono">【长期记忆】</td><td class="muted"><b>按需出现</b>：检索式选 ≤3 条（含类别、依据原话、到期日），内容合计 &lt;500 字符。<br>没有相关记忆时这一段完全不出现</td><td class="n">0–500</td></tr>
         <tr><td class="mono">【用户请求】</td><td class="muted">用户原话 + 心境 + 尾部两道指令（模式闸门、落盘要求）</td><td class="n">342</td></tr>
       </tbody>
     </table>
@@ -256,8 +257,8 @@
 
 <!-- ══════════════════════════════ C ══════════════════════════════ -->
 <section>
-  <div class="sechead"><span class="n">C</span><h2>它手里有什么：12 个工具</h2></div>
-  <p class="small muted" style="margin-bottom:12px">8 读 + 2 写 + 2 联网（联网需 <code>EXA_API_KEY</code>）。"书目类"才是<b>这次算不算真查过书库</b>的判据——画像类不算，否则一次 <code>get_user_profile</code> 就能蒙过书库硬闸门。</p>
+  <div class="sechead"><span class="n">C</span><h2>它手里有什么：14 个工具</h2></div>
+  <p class="small muted" style="margin-bottom:12px">10 个书库/画像 + 2 个记忆 + 2 个联网（联网需 <code>EXA_API_KEY</code>）。"书目类"才是<b>这次算不算真查过书库</b>的判据——画像类与记忆类都不算，否则一次 <code>get_user_profile</code> 或 <code>recall_memory</code> 就能蒙过书库硬闸门。</p>
   <div class="card" style="padding:0;overflow:hidden">
     <table>
       <thead><tr><th>工具</th><th>类型</th><th>能拿到什么</th><th>谁在用</th></tr></thead>
@@ -281,7 +282,7 @@
 
 <!-- ══════════════════════════════ D ══════════════════════════════ -->
 <section>
-  <div class="sechead"><span class="n">D</span><h2>写操作的两条闭环</h2></div>
+  <div class="sechead"><span class="n">D</span><h2>写操作的三条闭环</h2></div>
   <div class="grid g2">
     <div class="card">
       <h3>① 改书：<code class="mono">update_book_status</code></h3>
@@ -304,15 +305,26 @@
       <p class="tiny muted" style="margin-top:8px">实测：加尾部指令与闸门之前，27 次真实请求里模型调用此工具 <b>0 次</b>；之后两轮探针都在第 1 轮就写进去了。</p>
     </div>
     <div class="card">
-      <h3>③ 记人：回合后异步抽取 <code class="mono">/api/ai/profile/extract</code></h3>
+      <h3>③ 记人：回合后异步抽取 <code class="mono">/api/ai/extract</code></h3>
       <ol class="small muted">
         <li>回答已经渲染完之后才发（用户看不到这次等待）</li>
-        <li>两道<b>零成本</b>闸门：顾问本轮已落盘 → 跳过；消息未命中自述正则 → 跳过（"你好呀"实测 0.0s、零调用）</li>
-        <li>命中才花一次廉价调用（无工具、无概览，实测 7.3–7.7s），逐字段带原话依据</li>
-        <li><b>一律记为 AI 来源</b>：它没被用户要求过，所以覆盖不了用户定的字段</li>
-        <li>当场弹「AI 记住了…（撤销）」→ <code>POST /api/ai/profile/undo</code> 精确还原</li>
+        <li>两道<b>零成本</b>闸门：本轮已落盘 → 跳过；消息未命中自述正则 → 跳过（"你好呀"实测 0.0s、零调用）</li>
+        <li>命中才花一次廉价调用（无工具、无概览，实测 7.3–7.7s），<b>同时抽画像字段与长期记忆</b>，逐条带原话依据</li>
+        <li><b>一律记为 AI 来源</b>：它没被用户要求过，所以覆盖不了用户定的字段，记忆也会被标成"AI 记录的"</li>
+        <li>当场弹「AI 记住了…（撤销）」→ 字段走 <code>/api/ai/profile/undo</code> 精确还原，记忆走 <code>/api/ai/memories/reject</code> 墓碑</li>
       </ol>
-      <p class="tiny muted" style="margin-top:8px">为什么要这条路：让模型"顺便记住"不可靠（0/27）。设置页还有完整的「画像改动历史」，值的前后对比与逐条撤销都在那儿。</p>
+      <p class="tiny muted" style="margin-top:8px">为什么要这条路：让模型"顺便记住"不可靠（0/27）。AI 顾问与阅读管家都已接入，共用同一个提示条组件。</p>
+    </div>
+    <div class="card">
+      <h3>④ 记人：长期记忆 <code class="mono">remember</code> / <code class="mono">recall_memory</code></h3>
+      <ol class="small muted">
+        <li>存<b>塞不进画像槽位</b>的东西：事实、偏好、禁忌、约定（"我在准备考试""我不看成功学"）</li>
+        <li><code>evidence</code>（用户原话）必填；同内容（归一化）去重；<b>被用户删过的永不复活</b></li>
+        <li>注入是<b>检索式</b>：二元字组打分选 ≤3 条、合计 &lt;500 字符（实测 155 字符）</li>
+        <li><code>constraint</code> 有意加权（禁忌任何问题下都不该踩），但<b>限流 2 条</b>，留槽位给相关内容</li>
+        <li>设置页「AI 的记忆」可逐条删除；删除是终态，也不会被自动记回来</li>
+      </ol>
+      <p class="tiny muted" style="margin-top:8px">实测：模型确实调了 <code>remember</code> 并把原话落库；下一轮推荐《芒格之道》时理由里写着"<b>这本书不是成功学鸡汤</b>"——约束被读取并执行。</p>
     </div>
   </div>
 
@@ -351,6 +363,7 @@
           <tr><td class="mono">user_profiles</td><td class="muted small">画像 4 个字段 + <code>ai_analysis</code></td></tr>
           <tr><td class="mono">profile_field_meta</td><td class="muted small"><b>新增</b>：逐字段来源（谁写的 / 渠道 / 依据原话）</td></tr>
           <tr><td class="mono">profile_write_log</td><td class="muted small"><b>新增</b>：追加式画像改动日志（改前值 + 来源 + 依据 + 是否已撤销）——撤销与审计的地基</td></tr>
+          <tr><td class="mono">user_memories</td><td class="muted small"><b>新增</b>：长期记忆（类别 + 内容 + 原话依据 + 来源 + 到期 + 墓碑状态 + 归一化内容用于去重）</td></tr>
           <tr><td class="mono">conversations</td><td class="muted small"><b>本轮才接上</b>：AI 顾问会话（此前只建表、全仓无写入方）</td></tr>
           <tr><td class="mono">recommendation_feedback</td><td class="muted small">想读 / 跳过 + <b>服务端写的 <code>shown</code> 展示记录</b>（采纳率分母）</td></tr>
           <tr><td class="mono">category_meta</td><td class="muted small">分类说明</td></tr>
@@ -378,11 +391,11 @@
 <section>
   <div class="sechead"><span class="n">F</span><h2>为什么"看不清楚它在跑"：一半的能力没有接线</h2></div>
   <div class="warn" style="margin-bottom:12px">
-    <p class="small" style="margin:0"><b>21 个 AI 端点里，界面上真正在用的只有 12 个。</b>其中 5 个"数据类"（反馈 2 + 会话 3）本轮才接上；剩下 <b>9 个生成类端点完全没有调用方</b>——它们不出现在任何按钮背后，所以你永远看不到它们跑。</p>
+    <p class="small" style="margin:0"><b>25 个 AI 端点里，界面上真正在用的只有 16 个。</b>其中 5 个"数据类"（反馈 2 + 会话 3）与 4 个"记忆类"（抽取 1 + 记忆 3）是近两轮才接上的；剩下 <b>9 个生成类端点完全没有调用方</b>——它们不出现在任何按钮背后，所以你永远看不到它们跑。</p>
   </div>
   <div class="grid g2">
     <div class="card">
-      <h3><span class="tag t-db">已接线</span> 12 个</h3>
+      <h3><span class="tag t-db">已接线</span> 16 个</h3>
       <table>
         <tbody>
           <tr><td class="mono">/recommend/stream</td><td class="tiny muted">AIAdvisor（主入口）</td></tr>
@@ -394,6 +407,10 @@
           <tr><td class="mono">/reorganize</td><td class="tiny muted">设置页「AI 智能整理」</td></tr>
           <tr><td class="mono">POST/GET /recommend-feedback</td><td class="tiny muted">卡片上的「想读 / 跳过」</td></tr>
           <tr><td class="mono">GET/PUT/DELETE /conversation</td><td class="tiny muted">AI 顾问会话记忆<b>（本轮才接）</b></td></tr>
+          <tr><td class="mono">POST /extract</td><td class="tiny muted">回合后抽取（画像 + 记忆），顾问与管家都发<b>（本轮才接）</b></td></tr>
+          <tr><td class="mono">GET /memories</td><td class="tiny muted">设置页「AI 的记忆」<b>（本轮才接）</b></td></tr>
+          <tr><td class="mono">POST /memories/reject · /restore</td><td class="tiny muted">记忆的删除（墓碑）与恢复<b>（本轮才接）</b></td></tr>
+          <tr><td class="mono">POST /profile/undo · GET /profile/log</td><td class="tiny muted">画像改动历史与撤销<b>（本轮才接）</b></td></tr>
         </tbody>
       </table>
     </div>
@@ -421,10 +438,10 @@
 <section>
   <div class="sechead"><span class="n">G</span><h2>能力边界：它现在<b>不能</b>做什么</h2></div>
   <div class="grid g2">
-    <div class="card"><h3>⚠️ 长期记忆：结构化那半已通，自由记忆还没做</h3><p class="small muted"><b>已经有</b>：会话记忆（<code>conversations</code>）+ 结构化画像（4 字段 + 来源 + 保护 + 可撤销）+ 回合后异步抽取。<br><b>还没有</b>：没有槽位的事实与约定（"我在准备考试""我不看成功学"）——设计已写在路线图 §16，等真实使用数据积累后再做；读取必须靠检索而非全量注入，否则会稀释指令。</p></div>
+    <div class="card"><h3>✅ 长期记忆已经有三种，但都还年轻</h3><p class="small muted"><b>会话记忆</b>（<code>conversations</code>，40 条窗口）＋ <b>结构化画像</b>（4 字段 + 来源 + 覆盖保护 + 可撤销）＋ <b>自由记忆</b>（<code>user_memories</code>，事实/偏好/禁忌/约定，检索式注入 + 墓碑删除）。<br><b>仍缺</b>：记忆的"重要程度"标记与定期整理；"一次性的情绪"没有校验兜底；评估集仍是一次性采样。</p></div>
     <div class="card"><h3>❌ 不记"读过哪些行为"</h3><p class="small muted">没有阅读行为流水表。热力图只能按开始/完成两个离散事件计数，做不到"每天读了多久"；"进度 0%"到底是没读还是没记录，系统分不出。</p></div>
-    <div class="card"><h3>❌ 采纳率还没有真实数字</h3><p class="small muted">分母机制（<code>shown</code>）本轮才建好，要等真实点击才有 <code>wantRate</code>。而且这些信号目前只影响排序偏好，不参与任何自动评估。</p></div>
-    <div class="card"><h3>❌ 评估还是一次性采样</h3><p class="small muted">9 条 query、每条跑一轮，噪声大到分不清"改动有效"和"模型随机"。没有人工三维评分（相关性/多样性/难度适配）。</p></div>
+    <div class="card"><h3>❌ 采纳率还没有真实数字</h3><p class="small muted">分母机制（<code>shown</code>）已建好，要等真实点击才有 <code>wantRate</code>。而且这些信号目前只影响排序偏好，不参与任何自动评估。</p></div>
+    <div class="card"><h3>❌ 评估仍是一次性采样</h3><p class="small muted">11 条 query、每条跑一轮，噪声大到分不清"改动有效"和"模型随机"。没有人工三维评分（相关性/多样性/难度适配）。</p></div>
     <div class="card"><h3>❌ AI 的主观判断没有回写通道</h3><p class="small muted">模型在推荐里说"《X》其实不适合你现在读"，这句话不会落到任何地方影响下次结果。评分类主观数据（分类/难度/解读）只在导入期生成一次。</p></div>
     <div class="card"><h3>❌ 没有向量检索 / 协同过滤</h3><p class="small muted">路线图里明确列为非目标（个人书库信号量不够喂）。检索全靠 SQL LIKE + 分类过滤。</p></div>
   </div>
@@ -440,6 +457,7 @@ node inspect-context.js                      # 本次请求往模型里塞了什
 node inspect-context.js --query="我每天能读 40 分钟"   # 看闸门是否被这条 query 打开
 node check-validation.js                     # 推荐输出清洗：幻觉 bookId 修复/丢弃、站外去重（6 项）
 node check-profile-provenance.js             # 画像来源、覆盖保护、改动日志与撤销（27 项）
+node check-memories.js                       # 长期记忆：去重、删除是终态、TTL、注入上限、与画像隔离（28 项）
 
 node eval-advisor.js --run --tag=after --model=step-3.7-flash   # 真实模型评估（计费）
 node eval-advisor.js --compare=baseline,after                   # 前后对比（零成本）

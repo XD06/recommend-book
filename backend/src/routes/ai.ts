@@ -48,6 +48,11 @@ import {
   loadUserProfile,
   listProfileWriteLog,
   undoProfileWrite,
+  addMemory,
+  listMemories,
+  rejectMemory,
+  restoreMemory,
+  MEMORY_KINDS,
   saveConversation,
   loadConversation,
   clearConversation,
@@ -373,40 +378,40 @@ router.post('/recommend/stream', validate(recommendStreamSchema), async (req, re
 });
 
 // ============================================================================
-// 回合后的画像抽取与撤销
+// 回合后的抽取（画像字段 + 长期记忆）与撤销
 //
 // 为什么需要"回合后"这条路：让模型在回答的同时顺手落盘不可靠 —— 实测 27 次真实
 // 请求里它调用 update_user_profile 0 次（加了尾部指令与闸门之后才 2/2）。所以补一条
-// 不依赖模型自觉的路径：回答完再单独问一次"用户这句话里有没有稳定的画像信息"。
+// 不依赖模型自觉的路径：回答完再单独问一次"用户这句话里有没有稳定信息"。
 // 这次调用很便宜（无工具、无书库概览、只有一句话），且有两道零成本闸门先挡：
 //   ① 顾问本轮已经自己落盘了 → 直接跳过（不重复做同一件事）
 //   ② 用户消息没命中"稳定画像自述"正则 → 直接跳过（闲聊不该花这笔钱）
 //
-// 安全约束：异步路径**一律记为 AI 来源**。它是用户没要求过的后台写入，因此
-// 永远不能覆盖用户自己填/亲口说过的字段——命中的字段会被写入层拒绝并如实回传。
-// 用户想改自己的画像，走设置页或对话里明确说（那条走工具路径，userStated=true）。
+// 安全约束：异步路径抽出的一切**一律记为 AI 来源**（画像字段 source='ai'、
+// 记忆 source='ai'）。它是用户没要求过的后台写入，因此画像覆盖不了用户自己定的字段，
+// 记忆也会在界面上标成"AI 记录的"并附依据。用户明确要求记住的走 `remember` 工具。
 // ============================================================================
 
-const profileExtractSchema = z.object({
+const extractSchema = z.object({
   userMessage: z.string().min(1).max(2000),
   /** 顾问本轮是否已自己调用过 update_user_profile（前端从 done 事件里拿到） */
   alreadyWritten: z.boolean().optional(),
 });
 
-router.post('/profile/extract', validate(profileExtractSchema), async (req, res) => {
+router.post('/extract', validate(extractSchema), async (req, res) => {
   const { userMessage, alreadyWritten } = req.body;
 
   if (alreadyWritten) {
-    res.json({ success: true, data: { skipped: true, reason: 'advisor 已在对话中落盘', written: [], refused: [] } });
+    res.json({ success: true, data: { skipped: true, reason: 'advisor 已在对话中落盘', written: [], refused: [], memories: [] } });
     return;
   }
   if (!hasStableProfileStatement(userMessage)) {
-    res.json({ success: true, data: { skipped: true, reason: '未命中稳定画像自述', written: [], refused: [] } });
+    res.json({ success: true, data: { skipped: true, reason: '未命中稳定画像自述', written: [], refused: [], memories: [] } });
     return;
   }
 
   try {
-    const { updates } = await extractProfileUpdates(userMessage);
+    const { updates, memories } = await extractProfileUpdates(userMessage);
     const written: string[] = [];
     const refused: Array<{ field: string; reason: string }> = [];
     const logged: Array<{ field: string; logId: number }> = [];
@@ -430,13 +435,75 @@ router.post('/profile/extract', validate(profileExtractSchema), async (req, res)
       for (const f of r.written) applied.push({ field: f, value: (patch as any)[f], evidence: u.evidence });
     }
 
-    console.log(`[AI] 回合后画像抽取: 候选 ${updates.length}，写入 ${written.length}${refused.length ? `，拒绝 ${refused.length}` : ''}`);
-    res.json({ success: true, data: { skipped: false, written, refused, logged, applied } });
+    // 长期记忆：同样一律记为 AI 来源（见上方安全约束）
+    const addedMemories: Array<{ id: number; kind: string; content: string }> = [];
+    const skippedMemories: Array<{ content: string; reason: string }> = [];
+    for (const mem of memories) {
+      const kind = (MEMORY_KINDS as readonly string[]).includes(mem.kind) ? mem.kind : 'fact';
+      const r = addMemory(req.user!.id, {
+        kind,
+        content: String(mem.content),
+        evidence: mem.evidence,
+        source: 'ai',
+        origin: 'extract',
+        confidence: typeof mem.confidence === 'number' ? mem.confidence : null,
+        expiresAt: typeof mem.expiresAt === 'string' && mem.expiresAt ? mem.expiresAt : null,
+      });
+      if (r.added && r.memory) {
+        addedMemories.push({ id: r.memory.id, kind: r.memory.kind, content: r.memory.content });
+      } else {
+        skippedMemories.push({ content: String(mem.content).slice(0, 60), reason: r.reason || 'unknown' });
+      }
+    }
+
+    console.log(
+      `[AI] 回合后抽取: 画像候选 ${updates.length} → 写入 ${written.length}${refused.length ? `，拒绝 ${refused.length}` : ''}；` +
+      `记忆候选 ${memories.length} → 新增 ${addedMemories.length}${skippedMemories.length ? `，跳过 ${skippedMemories.length}` : ''}`,
+    );
+    res.json({
+      success: true,
+      data: { skipped: false, written, refused, logged, applied, memories: addedMemories, memoriesSkipped: skippedMemories },
+    });
   } catch (e: any) {
     // 抽取失败不该影响用户已经拿到的回答
-    console.warn('[AI] 回合后画像抽取失败（不影响对话）:', e.message);
-    res.json({ success: true, data: { skipped: true, reason: `抽取失败: ${e.message}`, written: [], refused: [] } });
+    console.warn('[AI] 回合后抽取失败（不影响对话）:', e.message);
+    res.json({ success: true, data: { skipped: true, reason: `抽取失败: ${e.message}`, written: [], refused: [], memories: [] } });
   }
+});
+
+// ============================================================================
+// 长期记忆：列表 / 删除（墓碑）/ 恢复
+//
+// "删除"落地为 status='rejected' 的墓碑而不是物理删除：既让它在界面上消失、
+// 不再被注入，也挡住"同内容被自动记回来"——否则撤销只是暂时隐藏。
+// ============================================================================
+
+router.get('/memories', (req, res) => {
+  const rawStatus = String(req.query.status || 'active');
+  const status = (['active', 'rejected', 'all'].includes(rawStatus) ? rawStatus : 'active') as 'active' | 'rejected' | 'all';
+  const rawLimit = Number(req.query.limit);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 100;
+  res.json({
+    success: true,
+    data: listMemories(req.user!.id, {
+      status,
+      includeExpired: req.query.includeExpired === 'true',
+      limit,
+    }),
+  });
+});
+
+const memoryIdSchema = z.object({ id: z.number().int().positive() });
+
+router.post('/memories/reject', validate(memoryIdSchema), (req, res) => {
+  const ok = rejectMemory(req.user!.id, req.body.id);
+  if (!ok) throw new AppError(ErrorCode.INVALID_REQUEST, '记忆不存在或已被删除', 400);
+  res.json({ success: true, data: { id: req.body.id, status: 'rejected' } });
+});
+
+router.post('/memories/restore', validate(memoryIdSchema), (req, res) => {
+  const ok = restoreMemory(req.user!.id, req.body.id);
+  res.json({ success: true, data: { id: req.body.id, restored: ok } });
 });
 
 router.get('/profile/log', (req, res) => {

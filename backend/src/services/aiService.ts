@@ -51,6 +51,7 @@ import {
   getAllTools,
   executeAllTools,
   buildLibraryOverview,
+  buildMemoryBlock,
   describeToolCallUnified,
   isLibraryCatalogTool,
   isProfileConfigured,
@@ -1502,18 +1503,23 @@ export function hasStableProfileStatement(text: string): boolean {
  */
 export async function extractProfileUpdates(userMessage: string): Promise<{
   updates: Array<{ field: string; value: any; evidence?: string; userStated?: boolean }>;
+  memories: Array<{ content: string; kind: string; evidence?: string; userStated?: boolean; confidence?: number; expiresAt?: string | null }>;
 }> {
   const content = await callAI([
     { role: 'system', content: PROFILE_EXTRACTOR_SYSTEM_PROMPT },
     { role: 'user', content: `用户刚说的那句话：\n"""${userMessage.slice(0, 1500)}"""` },
   ], 0.2);
 
-  const parsed = parseAIJSON<{ updates?: any[] }>(content) as any;
+  const parsed = parseAIJSON<{ updates?: any[]; memories?: any[] }>(content) as any;
   const updates = Array.isArray(parsed?.updates) ? parsed.updates : [];
+  const memories = Array.isArray(parsed?.memories) ? parsed.memories : [];
   return {
     updates: updates
       .filter((u: any) => u && typeof u === 'object' && typeof u.field === 'string')
       .slice(0, 4),
+    memories: memories
+      .filter((m: any) => m && typeof m === 'object' && typeof m.content === 'string' && typeof m.kind === 'string')
+      .slice(0, 3),
   };
 }
 
@@ -1542,6 +1548,9 @@ export function buildAdvisorPrompt(
   if (ctx.feedbackSummary) {
     userPrompt += `\n\n【采纳反馈】\n${ctx.feedbackSummary}\n`;
   }
+
+  // 长期记忆：检索式注入（≤3 条、内容合计 <500 字符），不是全量
+  userPrompt += buildMemoryBlock(ctx.userId, input.userRequest);
 
   if (input.categoryContext) {
     const cc = input.categoryContext;
@@ -2040,6 +2049,8 @@ export async function readingAssistantStream(
   if (ctx.feedbackSummary) {
     userPrompt += `\n\n【采纳反馈】\n${ctx.feedbackSummary}\n`;
   }
+  // 长期记忆：与推荐路径同一套检索式注入
+  userPrompt += buildMemoryBlock(ctx.userId, input.question);
   userPrompt += `\n【用户问题】\n${input.question}`;
   // 阅读管家同样是用户会聊到自身情况的地方，一并接上落盘要求与闸门
   userPrompt += `\n\n如果用户这条消息里说出了稳定的画像信息（阅读水平、长期目标、偏好分类、每日可读时间），先调用 update_user_profile 落盘（evidence 引用用户原话，userStated 只在用户本轮亲口说出时传 true），再回答。`;

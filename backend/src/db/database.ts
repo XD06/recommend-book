@@ -193,6 +193,35 @@ export function initDatabase(): void {
     );
   `);
 
+  // ============================================================================
+  // 长期记忆 — 没有槽位的事实、偏好、禁忌与约定
+  //
+  // 与画像的分工（写死，不许互相回写）：
+  //   画像 = 有槽位的稳定属性（水平/目标/偏好分类/每日时长），走 update_user_profile 及其来源保护；
+  //   记忆 = 没有槽位的东西（"我在准备考试"、"我不看成功学"）。记忆**不得**回写画像字段。
+  //
+  // status='rejected' 是墓碑：用户删掉的记忆永不复活，且会挡住同内容的再次添加
+  // —— 否则"删除"只是暂时隐藏，下次对话又被自动记回来，那是最伤信任的一种行为。
+  // ============================================================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_memories (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id      TEXT NOT NULL,
+      kind         TEXT NOT NULL,   -- fact | preference | constraint | goal | event
+      content      TEXT NOT NULL,   -- 一句话，≤200 字
+      norm         TEXT NOT NULL,   -- 归一化后的内容，用于去重与"墓碑拦截"
+      evidence     TEXT,            -- 用户原话片段
+      source       TEXT NOT NULL,   -- 'user'（用户要求/陈述） | 'ai'（模型自己判断值得记）
+      status       TEXT NOT NULL,   -- 'active' | 'rejected'
+      confidence   REAL,
+      origin       TEXT NOT NULL,   -- 'explicit' | 'extract' | 'manual'
+      created_at   TEXT NOT NULL,
+      last_used_at TEXT,
+      expires_at   TEXT,            -- 可空；'event' 类必须有
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+  `);
+
   // 索引
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_books_user_id ON books(user_id);
@@ -202,6 +231,8 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_conversations_user_book ON conversations(user_id, book_id);
     CREATE INDEX IF NOT EXISTS idx_rec_feedback_user_time ON recommendation_feedback(user_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_rec_feedback_user_book ON recommendation_feedback(user_id, book_id);
+    CREATE INDEX IF NOT EXISTS idx_memories_user_status ON user_memories(user_id, status);
+    CREATE INDEX IF NOT EXISTS idx_memories_user_expires ON user_memories(user_id, expires_at);
   `);
 
   console.log('[DB] SQLite initialized at:', dbPath);
@@ -586,6 +617,240 @@ export function updateUserProfileInDb(
     refused,
     logged,
   };
+}
+
+// ============================================================================
+// 长期记忆 — 读写、去重、墓碑、检索打分
+// ============================================================================
+
+export const MEMORY_KINDS = ['fact', 'preference', 'constraint', 'goal', 'event'] as const;
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
+
+export interface MemoryRow {
+  id: number;
+  kind: string;
+  content: string;
+  evidence: string | null;
+  source: string;
+  status: string;
+  confidence: number | null;
+  origin: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+}
+
+export interface MemoryInput {
+  kind: string;
+  content: string;
+  evidence?: string | null;
+  source: 'user' | 'ai';
+  origin: 'explicit' | 'extract' | 'manual';
+  confidence?: number | null;
+  expiresAt?: string | null;
+}
+
+/** 一个用户的活跃记忆上限。到顶就拒绝新增并让模型去合并，避免无界增长稀释指令 */
+export const MAX_ACTIVE_MEMORIES = 200;
+/** event 类没给过期时间时的默认寿命（天）——"下个月考试"这类信息不该永久留存 */
+const DEFAULT_EVENT_TTL_DAYS = 60;
+
+/** 内容归一化：去标点/空白、统一大小写，用于去重与墓碑比对 */
+function normalizeMemory(content: string): string {
+  return String(content || '')
+    .toLowerCase()
+    .replace(/[\s，。、！？；：""''（）()【】\[\]…—·,.:;!?"']/g, '');
+}
+
+function rowToMemory(r: any): MemoryRow {
+  return {
+    id: r.id,
+    kind: r.kind,
+    content: r.content,
+    evidence: r.evidence,
+    source: r.source,
+    status: r.status,
+    confidence: r.confidence,
+    origin: r.origin,
+    createdAt: r.created_at,
+    lastUsedAt: r.last_used_at,
+    expiresAt: r.expires_at,
+  };
+}
+
+export interface MemoryAddResult {
+  added: boolean;
+  memory?: MemoryRow;
+  /** 没加进去的原因，回给模型让它知道该怎么办 */
+  reason?: 'duplicate' | 'rejected_before' | 'limit_reached' | 'empty';
+}
+
+/**
+ * 新增一条记忆。
+ *
+ * 三道门：空内容拒收；同内容（归一化后）已存在就不重复加；**被用户删过的同内容永不复活**。
+ * 最后这条是"删除是终态"的实现——用户删掉的记忆如果再被自动记回来，撤销就成了摆设。
+ */
+export function addMemory(userId: string, input: MemoryInput): MemoryAddResult {
+  const content = String(input.content || '').trim().slice(0, 200);
+  if (!content) return { added: false, reason: 'empty' };
+  const norm = normalizeMemory(content);
+
+  const same = db.prepare('SELECT * FROM user_memories WHERE user_id = ? AND norm = ? ORDER BY id DESC LIMIT 1')
+    .get(userId, norm) as any;
+  if (same) {
+    return { added: false, reason: same.status === 'rejected' ? 'rejected_before' : 'duplicate', memory: rowToMemory(same) };
+  }
+
+  const activeCount = (db.prepare("SELECT COUNT(*) n FROM user_memories WHERE user_id = ? AND status = 'active'")
+    .get(userId) as any).n;
+  if (activeCount >= MAX_ACTIVE_MEMORIES) return { added: false, reason: 'limit_reached' };
+
+  const now = new Date().toISOString();
+  let expiresAt = input.expiresAt || null;
+  if (!expiresAt && input.kind === 'event') {
+    expiresAt = new Date(Date.now() + DEFAULT_EVENT_TTL_DAYS * 86400000).toISOString();
+  }
+
+  const info = db.prepare(`
+    INSERT INTO user_memories (user_id, kind, content, norm, evidence, source, status, confidence, origin, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+  `).run(
+    userId, input.kind, content, norm,
+    input.evidence ? String(input.evidence).slice(0, 200) : null,
+    input.source, input.confidence ?? null, input.origin, now, expiresAt,
+  );
+
+  return { added: true, memory: getMemory(userId, Number(info.lastInsertRowid))! };
+}
+
+export function getMemory(userId: string, id: number): MemoryRow | null {
+  const r = db.prepare('SELECT * FROM user_memories WHERE id = ? AND user_id = ?').get(id, userId) as any;
+  return r ? rowToMemory(r) : null;
+}
+
+/** 列出记忆；默认只给活跃且未过期的 */
+export function listMemories(
+  userId: string,
+  opts: { status?: 'active' | 'rejected' | 'all'; includeExpired?: boolean; limit?: number } = {},
+): MemoryRow[] {
+  const status = opts.status || 'active';
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const where: string[] = ['user_id = ?'];
+  const params: any[] = [userId];
+  if (status !== 'all') { where.push('status = ?'); params.push(status); }
+  if (!opts.includeExpired) {
+    where.push("(expires_at IS NULL OR expires_at > ?)");
+    params.push(new Date().toISOString());
+  }
+  const rows = db.prepare(`
+    SELECT * FROM user_memories WHERE ${where.join(' AND ')}
+    ORDER BY id DESC LIMIT ?
+  `).all(...params, limit) as any[];
+  return rows.map(rowToMemory);
+}
+
+/** 用户删除（墓碑）：永不复活，并挡住同内容再次写入 */
+export function rejectMemory(userId: string, id: number): boolean {
+  const r = db.prepare("UPDATE user_memories SET status = 'rejected' WHERE id = ? AND user_id = ? AND status = 'active'")
+    .run(id, userId);
+  return r.changes > 0;
+}
+
+/** 把记忆标回活跃（用户改主意）——但同内容若有活跃行会跳过，避免重复 */
+export function restoreMemory(userId: string, id: number): boolean {
+  const row = getMemory(userId, id);
+  if (!row || row.status !== 'rejected') return false;
+  const norm = normalizeMemory(row.content);
+  const active = db.prepare("SELECT id FROM user_memories WHERE user_id = ? AND norm = ? AND status = 'active'")
+    .get(userId, norm) as any;
+  if (active) return false;
+  db.prepare("UPDATE user_memories SET status = 'active' WHERE id = ? AND user_id = ?").run(id, userId);
+  return true;
+}
+
+export function touchMemoriesUsed(userId: string, ids: number[]): void {
+  if (ids.length === 0) return;
+  const now = new Date().toISOString();
+  const stmt = db.prepare('UPDATE user_memories SET last_used_at = ? WHERE id = ? AND user_id = ?');
+  const run = db.transaction((list: number[]) => { for (const id of list) stmt.run(now, id, userId); });
+  run(ids);
+}
+
+/** 中文没有空格，用二元字组做重叠度；英文数字按词 */
+function bigrams(text: string): Set<string> {
+  const out = new Set<string>();
+  const t = String(text || '').toLowerCase().replace(/[^\p{Script=Han}a-z0-9]/gu, '');
+  for (let i = 0; i + 2 <= t.length; i++) out.add(t.slice(i, i + 2));
+  for (const w of String(text || '').toLowerCase().match(/[a-z0-9]{3,}/g) || []) out.add(w);
+  return out;
+}
+
+/**
+ * 检索式选择要注入的记忆——**不能全量注入**。
+ *
+ * 画像 4 个字段 160 字符可以无脑全发；记忆会长到几百条，全量注入会稀释指令
+ * （370 行提示词里第 35 行那句话被稀释到 0 次触发，就是前车之鉴）。
+ *
+ * 打分与两条策略：
+ * - 与当前 query 的二元字组重叠（中文没有空格，用二字滑窗）
+ * - **`constraint`（用户明说过的禁忌）固定加权**：踩到用户说过的禁忌，代价比漏掉一条偏好高得多，
+ *   所以它即使与当前问题字面无关也该被带上。但为此**限流**：这类"靠加权进来"的条目最多占
+ *   `ALWAYS_INJECT_CONSTRAINTS` 个槽位，保证总有一个槽位留给真正跟问题相关的内容，
+ *   否则用户攒了 5 条禁忌之后，注入里就再没有别的东西了。
+ * - 近期用过的略微降权，避免同几条反复霸屏。
+ *
+ * 刻意不引向量库——个人库量级下够用，等记忆 >200 条再评估（见路线图 §16.4）。
+ */
+const ALWAYS_INJECT_CONSTRAINTS = 2;
+
+export function selectRelevantMemories(
+  userId: string,
+  query: string,
+  limit = 3,
+  maxChars = 500,
+): MemoryRow[] {
+  const all = listMemories(userId, { status: 'active', limit: MAX_ACTIVE_MEMORIES });
+  if (all.length === 0) return [];
+
+  const q = bigrams(query);
+  const now = Date.now();
+  const scored = all.map((m) => {
+    const mb = bigrams(`${m.content} ${m.kind}`);
+    let overlap = 0;
+    for (const g of q) if (mb.has(g)) overlap += 1;
+    let score = overlap;
+    if (m.kind === 'constraint') {
+      score += 2;                              // 见上方策略：禁忌即使字面无关也要带（限流 2 条）
+    } else if (m.kind === 'preference' && overlap > 0) {
+      score += 1;                              // **只在命中时**加权，用于把偏好排在事实前面。
+                                               // 无条件加过一次，结果是每条偏好都被注入（用例抓到的）
+    }
+    if (m.lastUsedAt) {
+      const days = (now - new Date(m.lastUsedAt).getTime()) / 86400000;
+      if (days < 3) score -= 0.5;
+    }
+    return { m, score, overlap };
+  });
+
+  // 只注入真正相关的；全都无关时一条都不注入（宁可没有，也不塞无关内容）
+  const picked: MemoryRow[] = [];
+  let chars = 0;
+  let bonusOnly = 0;
+  for (const { m, score, overlap } of scored.sort((a, b) => b.score - a.score)) {
+    if (score <= 0) break;
+    if (picked.length >= limit) break;
+    // 靠禁忌加权进来（与问题无字面重叠）的条目限流，留槽位给相关内容
+    if (overlap === 0) {
+      if (bonusOnly >= ALWAYS_INJECT_CONSTRAINTS) continue;
+      bonusOnly++;
+    }
+    const cost = Math.min(m.content.length, 120) + 20;
+    if (chars + cost > maxChars) break;
+    picked.push(m);
+    chars += cost;
+  }
+  return picked;
 }
 
 // ============================================================================

@@ -286,21 +286,31 @@ export async function clearConversationOnServer(
 // 异步路径一律记为 AI 来源，因此覆盖不了用户自己填的字段。
 // ============================================================================
 
-export interface ProfileExtractResult {
+export interface ExtractResult {
   skipped: boolean;
   reason?: string;
   written: string[];
   refused: Array<{ field: string; reason: string }>;
   logged?: Array<{ field: string; logId: number }>;
   applied?: Array<{ field: string; value: any; evidence?: string }>;
+  /** 这次新记下的长期记忆（同样是"用户没要求过的后台写入"，来源标为 AI） */
+  memories?: Array<{ id: number; kind: string; content: string }>;
+  memoriesSkipped?: Array<{ content: string; reason: string }>;
 }
 
-export async function extractProfileFromTurn(
+/** 一次回合后抽取的结果，供界面显示"AI 记住了什么"并可撤销 */
+export interface RememberedNote {
+  profileFields: Array<{ field: string; value: any; logId: number }>;
+  memories: Array<{ id: number; kind: string; content: string }>;
+  error?: string;
+}
+
+export async function extractFromTurn(
   userMessage: string,
   alreadyWritten?: boolean,
-): Promise<ProfileExtractResult | null> {
+): Promise<ExtractResult | null> {
   try {
-    const res = await fetch(`${API_BASE}/ai/profile/extract`, {
+    const res = await fetch(`${API_BASE}/ai/extract`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeader() },
       body: JSON.stringify({ userMessage, alreadyWritten }),
@@ -310,6 +320,89 @@ export async function extractProfileFromTurn(
     return data?.data ?? null;
   } catch {
     return null;   // 抽取失败与用户无关，静默
+  }
+}
+
+/**
+ * 回合后抽取 + 把结果整理成界面要的"AI 记住了"清单。
+ *
+ * 两道零成本闸门在后端（顾问本轮已落盘 / 未命中自述正则），所以这里可以放心调用：
+ * 闲聊会直接返回 skipped，不会花任何模型调用。
+ */
+export async function runPostTurnExtraction(
+  userMessage: string,
+  alreadyWritten?: boolean,
+): Promise<RememberedNote | null> {
+  const r = await extractFromTurn(userMessage, alreadyWritten);
+  if (!r || r.skipped) return null;
+
+  const logIdOf = (field: string) => (r.logged || []).find((l) => l.field === field)?.logId;
+  const profileFields = (r.applied || [])
+    .map((a) => ({ field: a.field, value: a.value, logId: logIdOf(a.field) }))
+    .filter((x): x is { field: string; value: any; logId: number } => typeof x.logId === 'number');
+  const memories = (r.memories || []).map((m) => ({ id: m.id, kind: m.kind, content: m.content }));
+
+  if (profileFields.length === 0 && memories.length === 0) return null;
+  return { profileFields, memories };
+}
+
+/** 撤销这一批"AI 记住的"：画像字段走日志还原，记忆走墓碑删除 */
+export async function undoRememberedNote(note: RememberedNote): Promise<void> {
+  for (const f of note.profileFields) await undoProfileWrite(f.logId);
+  for (const m of note.memories) await rejectMemory(m.id);
+}
+
+// ---------------------------------------------------------------- 长期记忆管理
+
+export interface MemoryItem {
+  id: number;
+  kind: string;
+  content: string;
+  evidence: string | null;
+  source: string;
+  status: string;
+  origin: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+}
+
+export async function fetchMemories(
+  status: 'active' | 'rejected' | 'all' = 'active',
+  limit = 100,
+): Promise<MemoryItem[]> {
+  const res = await fetch(`${API_BASE}/ai/memories?status=${status}&limit=${limit}`, { headers: authHeader() });
+  if (!res.ok) throw new Error('获取记忆失败');
+  const data = await res.json();
+  return data?.data ?? [];
+}
+
+/** 删除一条记忆（后端写墓碑：不再注入，也不会被自动记回来） */
+export async function rejectMemory(id: number): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/ai/memories/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ id }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function restoreMemory(id: number): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_BASE}/ai/memories/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return !!data?.data?.restored;
+  } catch {
+    return false;
   }
 }
 
