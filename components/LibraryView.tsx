@@ -19,6 +19,7 @@ import { Card } from './Card';
 import { Button } from './Button';
 import { ReadingTimeline } from './ReadingTimeline';
 import { ReadingHeatmap } from './ReadingHeatmap';
+import { useActivities } from '../hooks/useActivities';
 
 interface LibraryViewProps {
   books: Book[];
@@ -30,7 +31,7 @@ interface LibraryViewProps {
 type ViewMode = 'grid' | 'list';
 type FilterStatus = 'all' | BookStatus;
 type FilterLevel = 'all' | BookLevel;
-type SortOption = 'recent' | 'title' | 'author' | 'rating' | 'progress';
+type SortOption = 'added' | 'recent' | 'title' | 'author' | 'rating' | 'progress';
 
 /**
  * 入场动画的延迟上限。
@@ -68,7 +69,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [filterLevel, setFilterLevel] = useState<FilterLevel>('all');
   const [showFilters, setShowFilters] = useState(false);
   const [showInsights, setShowInsights] = useState(false);
-  const [sortBy, setSortBy] = useState<SortOption>('recent');
+  const [sortBy, setSortBy] = useState<SortOption>('added');
+
+  // 阅读动态来自后端流水表。用「书数 + 最近更新时间」当刷新信号：
+  // 新增/删除会改数量，改状态会改 updatedAt，两者覆盖了所有动态来源。
+  const activitySignal = `${books.length}:${books[0]?.updatedAt ?? ''}:${books[books.length - 1]?.updatedAt ?? ''}`;
+  const { activities, loading: activitiesLoading } = useActivities(activitySignal, 12);
 
   // 首次进入才播入场动画；切 tab 回来直接呈现（组件虽被 App.tsx 的 key 重挂载，
   // 但模块级标记跨挂载存活）。用 ref 固定本次挂载的判定。
@@ -127,12 +133,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           return (b.doubanRating || 0) - (a.doubanRating || 0);
         case 'progress':
           return (b.userData?.progressPercentage || 0) - (a.userData?.progressPercentage || 0);
+        case 'added':
+          // 最近加入：新导入的书排最前，不必滑到最底部
+          return (b.createdAt || '').localeCompare(a.createdAt || '');
         case 'recent':
-        default:
-          // Sort by last activity (start date or completion date)
-          const aDate = a.userData?.completionDate || a.userData?.startDate || '';
-          const bDate = b.userData?.completionDate || b.userData?.startDate || '';
+        default: {
+          // 最近活动：按"读完 > 开始读"的最近时间排。
+          // 关键在空值兜底 —— 未读的书这两个字段都没有，取到空串后
+          // '' vs '' 恒等 0，排序等于没做，新书会永远沉在最后。
+          // 所以退一步用 createdAt：没读过任何书的书库也至少是"新书在前"。
+          const aDate = a.userData?.completionDate || a.userData?.startDate || a.createdAt || '';
+          const bDate = b.userData?.completionDate || b.userData?.startDate || b.createdAt || '';
           return bDate.localeCompare(aDate);
+        }
       }
     });
 
@@ -272,6 +285,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   onChange={(e) => setSortBy(e.target.value as SortOption)}
                   className="appearance-none bg-zinc-100 border border-zinc-200 text-zinc-700 text-sm rounded-lg pl-3 pr-8 py-2 focus:outline-none focus:ring-2 focus:ring-accent-100 focus:border-accent-500 cursor-pointer"
                 >
+                  <option value="added">最近加入</option>
                   <option value="recent">最近活动</option>
                   <option value="title">书名</option>
                   <option value="author">作者</option>
@@ -450,7 +464,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             <span className="text-xs text-zinc-400">{showInsights ? '收起' : '展开'}</span>
           </button>
           <div className={['space-y-6', showInsights ? '' : 'hidden lg:block'].join(' ')}>
-            <ReadingTimeline books={books} onSelectBook={onSelectBook} />
+            <ReadingTimeline
+              activities={activities}
+              books={books}
+              onSelectBook={onSelectBook}
+              loading={activitiesLoading}
+            />
             <ReadingHeatmap books={books} />
           </div>
         </motion.aside>

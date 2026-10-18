@@ -222,6 +222,30 @@ export function initDatabase(): void {
     );
   `);
 
+  // ============================================================================
+  // 书籍操作流水表（书库"阅读动态"的唯一真源）
+  //
+  // 为什么要建表而不是继续从 books 派生：新增/删除这两类事件**无法派生**。
+  // 删除后书行就没了，`books` 数组里根本查不到；新增只有 `created_at`，
+  // 分不清"导入"和"AI 推荐加入"。而阅读动态本身是只增不改的流水，
+  // 语义上就该独立成表。
+  //
+  // `book_title` 冗余存一份：书被删除后仍然要显示"删除了《XXX》"，
+  // 靠 book_id 反查会拿到 null。代价是书名改动后历史动态显示旧名，
+  // 这反而符合事实（动态记录的是"当时发生的事"）。
+  // ============================================================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS book_activities (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id    TEXT NOT NULL,
+      book_id    TEXT,
+      book_title TEXT NOT NULL,
+      type       TEXT NOT NULL,   -- added | started | finished | deleted
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+  `);
+
   // 索引
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_books_user_id ON books(user_id);
@@ -233,6 +257,8 @@ export function initDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_rec_feedback_user_book ON recommendation_feedback(user_id, book_id);
     CREATE INDEX IF NOT EXISTS idx_memories_user_status ON user_memories(user_id, status);
     CREATE INDEX IF NOT EXISTS idx_memories_user_expires ON user_memories(user_id, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_activities_user_time ON book_activities(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_activities_user_book ON book_activities(user_id, book_id);
   `);
 
   console.log('[DB] SQLite initialized at:', dbPath);
@@ -366,6 +392,179 @@ export function loadUserLibrary(userId: string): Book[] {
     .prepare('SELECT * FROM books WHERE user_id = ? ORDER BY created_at')
     .all(userId) as BookRow[];
   return rows.map(rowToBook);
+}
+
+// ============================================================================
+// 书籍操作流水（阅读动态）
+// ============================================================================
+
+export type ActivityType = 'added' | 'started' | 'finished' | 'deleted';
+
+export interface BookActivity {
+  id: number;
+  bookId: string | null;
+  bookTitle: string;
+  type: ActivityType;
+  createdAt: string;
+}
+
+/**
+ * 记一条动态。
+ *
+ * 刻意做成"永不抛错"：动态是附属信息，记不上不该让主流程（保存书库、
+ * 删除书）失败。真出问题只在日志里留痕。
+ */
+export function addActivity(
+  userId: string,
+  bookId: string | null,
+  bookTitle: string,
+  type: ActivityType,
+  createdAt: string = new Date().toISOString(),
+): void {
+  try {
+    db.prepare(
+      'INSERT INTO book_activities (user_id, book_id, book_title, type, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(userId, bookId, bookTitle, type, createdAt);
+  } catch (err) {
+    console.error('[Activity] 写入动态失败:', (err as Error).message);
+  }
+}
+
+/** 批量记动态（一次导入几十本时省掉几十次 prepare） */
+export function addActivities(
+  userId: string,
+  items: Array<{ bookId: string | null; bookTitle: string; type: ActivityType; createdAt?: string }>,
+): void {
+  if (items.length === 0) return;
+  try {
+    const stmt = db.prepare(
+      'INSERT INTO book_activities (user_id, book_id, book_title, type, created_at) VALUES (?, ?, ?, ?, ?)',
+    );
+    const insertAll = db.transaction((rows: typeof items) => {
+      for (const it of rows) {
+        stmt.run(userId, it.bookId, it.bookTitle, it.type, it.createdAt ?? new Date().toISOString());
+      }
+    });
+    insertAll(items);
+  } catch (err) {
+    console.error('[Activity] 批量写入动态失败:', (err as Error).message);
+  }
+}
+
+export function listActivities(userId: string, limit = 50): BookActivity[] {
+  const rows = db
+    .prepare(
+      `SELECT id, book_id, book_title, type, created_at
+         FROM book_activities
+        WHERE user_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?`,
+    )
+    .all(userId, limit) as Array<{
+      id: number;
+      book_id: string | null;
+      book_title: string;
+      type: ActivityType;
+      created_at: string;
+    }>;
+
+  return rows.map((r) => ({
+    id: r.id,
+    bookId: r.book_id,
+    bookTitle: r.book_title,
+    type: r.type,
+    createdAt: r.created_at,
+  }));
+}
+
+/**
+ * 存量回填：把已有书库按 created_at 补一批 `added` 动态。
+ *
+ * 只在该用户**一条动态都没有**时执行。否则每次启动都会重复回填，
+ * 动态列表会被几百条"新增"淹没。用户只要有过任何动态（哪怕是刚删了一本书），
+ * 就说明这套机制已经在跑了，不再回填。
+ *
+ * 返回回填条数，便于日志与验证。
+ */
+export function backfillActivities(userId: string): number {
+  const rows = db
+    .prepare('SELECT id, title, status, created_at, user_data FROM books WHERE user_id = ? ORDER BY created_at')
+    .all(userId) as Array<{
+      id: string;
+      title: string;
+      status: string;
+      created_at: string;
+      user_data: string | null;
+    }>;
+
+  if (rows.length === 0) return 0;
+
+  // 按类型分别判断"补不补"，而不是"表里有没有任何一条"。
+  // 后者的问题是：第一版只补了 added，一旦写进去，后面再想补 started/finished
+  // 就永远进不来了（表已非空）。按类型判缺失则天然幂等，也能补齐新加的类型。
+  const has = new Set(
+    (db
+      .prepare('SELECT DISTINCT type FROM book_activities WHERE user_id = ?')
+      .all(userId) as Array<{ type: string }>).map((r) => r.type),
+  );
+
+  const items: Array<{
+    bookId: string | null;
+    bookTitle: string;
+    type: ActivityType;
+    createdAt?: string;
+  }> = [];
+
+  if (!has.has('added')) {
+    for (const r of rows) {
+      // 用书本身的创建时间，这样动态列表的时间轴与书库一致，
+      // 不会出现"417 本全是今天新增"的假象
+      items.push({ bookId: r.id, bookTitle: r.title, type: 'added', createdAt: r.created_at });
+    }
+  }
+
+  // 阅读事件的时间必须取书里的 startDate / completionDate，而不是 now()：
+  // 否则一本 7 月读完的书会显示成"今天读完"，动态就失真了。
+  const readDate = (raw: string | null): string | undefined => {
+    if (!raw) return undefined;
+    try {
+      const data = JSON.parse(raw);
+      const d = data?.completionDate || data?.startDate;
+      if (!d || typeof d !== 'string') return undefined;
+      // 库里存的是 YYYY-MM-DD，补成带时间的 ISO 才能与 added 正确排序
+      return d.length === 10 ? `${d}T12:00:00.000Z` : d;
+    } catch {
+      return undefined;
+    }
+  };
+
+  if (!has.has('started')) {
+    for (const r of rows) {
+      if (r.status !== 'reading') continue;
+      const at = readDate(r.user_data);
+      if (at) items.push({ bookId: r.id, bookTitle: r.title, type: 'started', createdAt: at });
+    }
+  }
+
+  if (!has.has('finished')) {
+    for (const r of rows) {
+      if (r.status !== 'finished') continue;
+      let at: string | undefined;
+      try {
+        const data = JSON.parse(r.user_data || '{}');
+        const d = data?.completionDate;
+        if (typeof d === 'string' && d) at = d.length === 10 ? `${d}T12:00:00.000Z` : d;
+      } catch {
+        at = undefined;
+      }
+      if (at) items.push({ bookId: r.id, bookTitle: r.title, type: 'finished', createdAt: at });
+    }
+  }
+
+  if (items.length === 0) return 0;
+
+  addActivities(userId, items);
+  return items.length;
 }
 
 /**

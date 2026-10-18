@@ -132,6 +132,18 @@ export interface CategoryGroup {
   books: Book[];
 }
 
+/** 书籍操作流水（后端 book_activities 表） */
+export type ActivityType = 'added' | 'started' | 'finished' | 'deleted';
+
+export interface BookActivity {
+  id: number;
+  /** 书已删除时为 null，或指向一个已不存在的 id —— 所以标题必须单独带 */
+  bookId: string | null;
+  bookTitle: string;
+  type: ActivityType;
+  createdAt: string;
+}
+
 export interface PathStage {
   stage: number;
   bookIds: string[];

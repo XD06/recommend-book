@@ -219,6 +219,18 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
     if (!silent) showSuccess('书籍信息已更新');
   };
 
+  /**
+   * 删除一本书：从本地状态移除。
+   *
+   * 不必再调 DELETE 接口——BookDetail 已经调过了。这里只负责把书从
+   * 内存书库摘掉；后续的全量保存（useBookLibrary 的防抖 batch）会把
+   * "这本书不存在"这个事实同步给服务端，两边不会打架。
+   */
+  const handleBookDelete = (bookId: string) => {
+    setBooks(books.filter((b) => b.id !== bookId));
+    setSelectedBook(null);
+  };
+
   React.useEffect(() => {
     const handleOpenBookDetail = (e: CustomEvent<Book>) => {
       setSelectedBook(e.detail);
@@ -479,6 +491,7 @@ const AppContent: React.FC<{ user: AuthUser; onLogout: () => void }> = ({ user, 
             book={selectedBook}
             onClose={() => setSelectedBook(null)}
             onUpdate={handleBookUpdate}
+            onDelete={handleBookDelete}
           />
         )}
       </AnimatePresence>

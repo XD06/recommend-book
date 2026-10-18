@@ -4,7 +4,7 @@
  * 所有操作通过后端 API 完成，数据存储在 SQLite 数据库中
  */
 
-import { Book, BookLevel, CategoryMeta, UserProfile } from '../types';
+import { Book, BookActivity, BookLevel, CategoryMeta, UserProfile } from '../types';
 import { API_BASE, authHeader } from './authService';
 
 // ============================================================================
@@ -52,6 +52,21 @@ export async function deleteBook(bookId: string): Promise<void> {
     headers: authHeader(),
   });
   if (!res.ok) throw new Error('删除书籍失败');
+}
+
+/**
+ * 获取阅读动态（书库操作流水）。
+ *
+ * 数据来自后端 `book_activities` 表，而不是前端从 books 派生——
+ * 因为"新增/删除"这两类事件无法派生：删掉的书已经不在数组里了。
+ */
+export async function fetchActivities(limit = 12): Promise<BookActivity[]> {
+  const res = await fetch(`${API_BASE}/books/activities?limit=${limit}`, {
+    headers: authHeader(),
+  });
+  if (!res.ok) throw new Error('获取阅读动态失败');
+  const data = await res.json();
+  return data.data;
 }
 
 /**

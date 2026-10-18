@@ -17,6 +17,7 @@ import { Card, CardHeader } from './Card';
 import { Badge } from './Badge';
 import { ReadingHeatmap } from './ReadingHeatmap';
 import { ReadingTimeline } from './ReadingTimeline';
+import { useActivities } from '../hooks/useActivities';
 import { DifficultyScale } from './DifficultyBadge';
 import { ReadingAssistant } from './ReadingAssistant';
 
@@ -29,6 +30,8 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, onSelectBook }) => 
   const [showAssistant, setShowAssistant] = useState(false);
   // 统计数字来自后端 computeLibraryStats（与发给模型的概览同一实现）
   const [serverStats, setServerStats] = useState<LibraryStatsResponse | null>(null);
+  const activitySignal = `${books.length}:${books[0]?.updatedAt ?? ''}:${books[books.length - 1]?.updatedAt ?? ''}`;
+  const { activities, loading: activitiesLoading } = useActivities(activitySignal, 12);
 
   useEffect(() => {
     let cancelled = false;
@@ -147,12 +150,14 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, onSelectBook }) => 
           </Card>
 
           {/* Reading Timeline */}
-          <ReadingTimeline 
-            books={books} 
+          <ReadingTimeline
+            activities={activities}
+            books={books}
             onSelectBook={(book) => {
               // 通过 props 回调打开书籍详情
               onSelectBook?.(book);
             }}
+            loading={activitiesLoading}
           />
         </motion.div>
 

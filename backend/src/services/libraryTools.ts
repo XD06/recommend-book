@@ -36,6 +36,7 @@ import { Book, BookStatus, BookLevel, UserProfile, ReadingLevel, AgentContext } 
 import {
   updateBookProgressInDb,
   updateUserProfileInDb,
+  addActivity,
   loadUserLibrary,
   loadUserProfile,
   summarizeRecommendationFeedback,
@@ -1311,6 +1312,9 @@ function updateBookStatus(
   }
 
   const updates: Partial<Book> = {};
+  // 记动态要用**改之前**的状态：下面几段直接改 book.status（同一引用），
+  // 事后再读就永远是"新状态"，diff 恒为 false
+  const prevStatus = book.status;
 
   // 更新状态
   if (status && ['unread', 'reading', 'finished'].includes(status)) {
@@ -1382,6 +1386,11 @@ function updateBookStatus(
       success: false,
       message: `《${book.title}》未能写入数据库（可能已被删除），状态改动不会保留`,
     };
+  }
+
+  // 状态真正变化才记动态（AI 反复确认同一状态不该刷屏）
+  if (prevStatus !== status && (status === 'reading' || status === 'finished')) {
+    addActivity(ctx.userId, bookId, book.title, status === 'reading' ? 'started' : 'finished');
   }
 
   return {

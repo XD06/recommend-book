@@ -6,10 +6,11 @@ import { Card } from './Card';
 import { Badge } from './Badge';
 import { DifficultyBadge, DifficultyScale } from './DifficultyBadge';
 import { generateInsightStream } from '../services/geminiService';
-import { refreshBookDouban } from '../services/bookService';
+import { refreshBookDouban, deleteBook } from '../services/bookService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import { BookQA } from './BookQA';
 import { useToast } from './Toast';
+import { useConfirm } from './ConfirmDialog';
 import {
   X,
   Play,
@@ -30,12 +31,15 @@ import {
   Brain,
   StopCircle,
   ArrowsClockwise,
+  Trash,
 } from '@phosphor-icons/react';
 
 interface BookDetailProps {
   book: Book;
   onClose: () => void;
   onUpdate: (updatedBook: Book, silent?: boolean) => void;
+  /** 删除后回调：由上层把这本书从书库移除并关掉详情 */
+  onDelete?: (bookId: string) => void;
 }
 
 const levelText: Record<BookLevel, string> = {
@@ -50,8 +54,9 @@ const levelColors: Record<BookLevel, string> = {
   [BookLevel.EXPERT]: 'bg-danger-50 text-danger-700 border-danger-200',
 };
 
-export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate }) => {
+export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate, onDelete }) => {
   const { showSuccess, showError } = useToast();
+  const { confirm } = useConfirm();
   const [isActivating, setIsActivating] = useState(false);
   const [activeTab, setActiveTab] = useState<'insight' | 'progress' | 'douban' | 'qa'>('insight');
   const [isEditing, setIsEditing] = useState(false);
@@ -73,6 +78,8 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
   const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
   // 豆瓣数据重新抓取中
   const [isRefreshingDouban, setIsRefreshingDouban] = useState(false);
+  // 删除进行中
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // 流式 AI 状态
   const ai = useAIActivity();
@@ -100,6 +107,34 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
       userData: book.userData ? { ...book.userData, totalPages } : (totalPages > 0 ? { totalPages, currentPage: 0, progressPercentage: 0 } : undefined),
     });
     setIsEditing(false);
+  };
+
+  /**
+   * 删除这本书。
+   *
+   * 走二次确认，且明确告知"不可撤销"——删掉会连阅读进度、AI 解读、自评星级
+   * 一起没了（那是这本书独有的数据，删了没有地方恢复）。
+   */
+  const handleDelete = async () => {
+    const ok = await confirm({
+      title: `删除《${book.title}》？`,
+      message: '这本书的阅读进度、AI 解读和评分会一起删除，且无法恢复。',
+      confirmLabel: '删除',
+      variant: 'danger',
+    });
+    if (!ok) return;
+
+    setIsDeleting(true);
+    try {
+      await deleteBook(book.id);
+      showSuccess('已移出书库');
+      onDelete?.(book.id);
+      onClose();
+    } catch (err) {
+      showError(`删除失败：${(err as Error).message}`);
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   /**
@@ -446,12 +481,24 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
               )}
             </div>
 
-            <button
-              onClick={onClose}
-              className="p-2 -mr-2 -mt-2 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              {/* 删除放在最右，与关闭按钮相邻但样式区分开（灰→红 hover），
+                  避免误点：它的 hover 变红，而关闭是变黑 */}
+              <button
+                onClick={handleDelete}
+                disabled={isDeleting}
+                className="p-2 -mt-2 rounded-lg text-zinc-400 hover:text-danger-600 hover:bg-danger-50 transition-colors disabled:opacity-50"
+                title="删除这本书"
+              >
+                <Trash className={`w-5 h-5 ${isDeleting ? 'animate-pulse' : ''}`} />
+              </button>
+              <button
+                onClick={onClose}
+                className="p-2 -mr-2 -mt-2 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
 

@@ -7,6 +7,9 @@
 自上一提交以来已落在仓库、但尚未发版的改动：
 
 ### 新增
+- **书库操作流水 `book_activities` + 阅读动态改为读流水**：新表记录 `added` / `started` / `finished` / `deleted` 四类事件，`GET /api/books/activities?limit=` 读取，`components/ReadingTimeline.tsx` 从"由 `startDate`/`completionDate` 派生"改为直接渲染流水。**为什么要独立成表**：新增与删除这两类事件根本无法从 `books` 派生——书删了行就没了，新增只有 `created_at` 分不清是导入还是 AI 推荐加入。表里冗余存 `book_title`，因为书被删除后仍要显示"删除了《XXX》"，靠 `book_id` 反查会拿到 null（书名改动后历史动态显示旧名，这反而符合"动态记录当时发生的事"）。四类事件的写入点：整库保存时服务端 diff（新增/删除/开始/读完，前端做不了——它拿不到"服务端当前是什么"，那份快照可能已被 AI 工具改过）、`DELETE /api/books/:id`、Agent 的 `update_book_status`（改前状态需在改写引用前捕获，否则 diff 恒为 false）。存量用户首次 `GET /api/books` 时按类型补齐历史事件（幂等：哪类缺失补哪类，而非"表里有任何一条就跳过"，否则第一版只补 `added` 之后再想补 `started` 就永远进不来），阅读事件的时间取书里真实的 `startDate`/`completionDate`，不用 `now()`——否则一本 7 月读完的书会显示成"今天读完"
+- **书库排序新增「最近加入」并设为默认**：`createdAt DESC`，新导入的书直接排最前，不必滑到 417 本的底部。同时修好「最近活动」的空值兜底——它原先取 `completionDate || startDate`，417 本里 413 本未读书两者皆空，`''.localeCompare('')` 恒为 0，排序等于没做，退化成数据库默认的 `created_at ASC`（新书恒在最后，这正是"新书沉底"的根因）。现在空值时回退到 `createdAt`，未读为主的库也至少是"新书在前"
+- **书籍详情页删除入口**：`BookDetail` 头部新增删除按钮（灰→红 hover，与关闭按钮的灰→黑区分开，避免误点），走 `ConfirmDialog` 二次确认并明确告知"阅读进度、AI 解读和评分会一起删除，且无法恢复"。此前 `bookService.deleteBook()` 早已定义但**全仓无调用入口**，删除只能靠整库保存时"书不在列表里"被动触发
 - 阅读画像真正接入推荐链路：设置页新增「阅读画像」表单（阅读水平 / 目标 / 每日时长 / 偏好分类），`App.tsx` 挂载时拉取 `GET /api/profile`。此前画像接口与后端 `【用户画像】` 注入逻辑都在，但前端从未请求，AI 侧画像段与 `get_user_profile` 工具恒为空。（透传给 AI 组件这一段已被后续改动取代：画像改由后端在流式端点内直读 SQLite，见「变更」首条；`App.tsx` 的拉取仍保留，供设置页表单使用）
 - `GET /api/profile/stats` + `backend/src/services/libraryStats.ts`：统计口径收敛为单一实现，`buildLibraryOverview`（发给模型的概览）、`get_category_stats` 工具与统计页共用
 - `docs/AI-RECOMMENDATION-ROADMAP.md`：AI 荐书链路诊断与路线图（画像链路断点、常驻注入分档、统计口径归一、移动端缺陷、采纳反馈闭环与评估集），逐条附 `文件:行号` 证据与验收标准

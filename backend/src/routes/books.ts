@@ -12,6 +12,11 @@ import db, {
   bookToParams,
   UPSERT_BOOK_SQL,
   loadUserLibrary,
+  addActivities,
+  addActivity,
+  listActivities,
+  backfillActivities,
+  type ActivityType,
 } from '../db/database';
 import { requireAuth } from '../middleware/auth';
 import { AppError } from '../types';
@@ -29,8 +34,31 @@ router.use(requireAuth);
 
 router.get('/', (req, res, next) => {
   try {
-    const books = loadUserLibrary(req.user!.id);
+    const userId = req.user!.id;
+    // 存量回填：老用户的书库没有历史动态，访问时按类型补齐。
+    // 内部对 added / started / finished 各自判断是否已存在，重复调用安全。
+    const backfilled = backfillActivities(userId);
+    if (backfilled > 0) {
+      console.log(`[Activity] 已为 ${userId} 回填 ${backfilled} 条历史动态`);
+    }
+    const books = loadUserLibrary(userId);
     res.json({ success: true, data: books });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================================
+// 阅读动态（书库操作流水）
+//
+// 必须排在 `GET /:id` **之前**：Express 按注册顺序匹配，否则 "activities"
+// 会被当成一个 bookId 命中 /:id，永远走到 404。
+// ============================================================================
+
+router.get('/activities', (req, res, next) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    res.json({ success: true, data: listActivities(req.user!.id, limit) });
   } catch (err) {
     next(err);
   }
@@ -60,6 +88,56 @@ const batchSaveSchema = z.object({
   books: z.array(z.any()),
 });
 
+export interface BookSnapshot {
+  title: string;
+  status: string;
+}
+
+/**
+ * 对比保存前后的书库，把变化记成动态。
+ *
+ * 为什么必须在**服务端**做 diff：整库保存是前端把全量状态推上来，
+ * 服务端只有"旧库"和"新库"两份快照，这是唯一能同时看到两边的时刻。
+ * 前端做不了——它拿不到"服务端当前是什么"（可能已被 AI 工具改过）。
+ *
+ * 只记四类事件，其余改动（改书名、改分类、改评分）不算"动态"：
+ * 用户打开动态是想看"书库发生了什么"，而不是一份审计日志。
+ */
+export function recordLibraryDiff(
+  userId: string,
+  before: Map<string, BookSnapshot>,
+  after: Array<{ id: string; title: string; status: string }>,
+): void {
+  const afterIds = new Set(after.map((b) => b.id));
+  const events: Array<{ bookId: string | null; bookTitle: string; type: ActivityType }> = [];
+
+  for (const b of after) {
+    if (!before.has(b.id)) {
+      events.push({ bookId: b.id, bookTitle: b.title, type: 'added' });
+    }
+  }
+
+  // 删除事件的书名必须取自**旧快照**：新载荷里已经没有这本书了
+  for (const [id, snap] of before) {
+    if (!afterIds.has(id)) {
+      events.push({ bookId: id, bookTitle: snap.title, type: 'deleted' });
+    }
+  }
+
+  for (const b of after) {
+    const prev = before.get(b.id);
+    if (!prev || prev.status === b.status) continue;
+    // 只在"进入"这两个状态时记，退回 unread 不记（那是撤销，不是动态）
+    if (b.status === 'reading') {
+      events.push({ bookId: b.id, bookTitle: b.title, type: 'started' });
+    } else if (b.status === 'finished') {
+      events.push({ bookId: b.id, bookTitle: b.title, type: 'finished' });
+    }
+  }
+
+  addActivities(userId, events);
+}
+
 router.post('/batch', (req, res, next) => {
   try {
     const { books } = batchSaveSchema.parse(req.body);
@@ -70,6 +148,13 @@ router.post('/batch', (req, res, next) => {
     // 事务：先删除用户所有书，再批量插入
     // 这样前端只需要把当前状态全量发过来，后端自动同步
     const tx = db.transaction((allBooks: any[]) => {
+      // 先取旧快照（必须在 DELETE 之前，否则 diff 拿不到被删的书）
+      const before = new Map<string, BookSnapshot>();
+      const oldRows = db
+        .prepare('SELECT id, title, status FROM books WHERE user_id = ?')
+        .all(userId) as Array<{ id: string; title: string; status: string }>;
+      for (const r of oldRows) before.set(r.id, { title: r.title, status: r.status });
+
       // 先删除当前不在列表中的书
       const newIds = allBooks.map(b => b.id);
       if (newIds.length > 0) {
@@ -82,6 +167,12 @@ router.post('/batch', (req, res, next) => {
       for (const book of allBooks) {
         upsert.run(bookToParams(userId, book));
       }
+
+      recordLibraryDiff(
+        userId,
+        before,
+        allBooks.map((b) => ({ id: b.id, title: b.title, status: b.status || 'unread' })),
+      );
     });
 
     tx(books);
@@ -141,10 +232,19 @@ router.put('/:id', (req, res, next) => {
 
 router.delete('/:id', (req, res, next) => {
   try {
-    const result = db.prepare('DELETE FROM books WHERE id = ? AND user_id = ?').run(req.params.id, req.user!.id);
-    if (result.changes === 0) {
+    const userId = req.user!.id;
+    // 先取书名：删除后这一行就没了，动态里要显示"删除了《XXX》"
+    const row = db
+      .prepare('SELECT id, title FROM books WHERE id = ? AND user_id = ?')
+      .get(req.params.id, userId) as { id: string; title: string } | undefined;
+
+    if (!row) {
       throw new AppError('BOOK_NOT_FOUND', '书籍不存在', 404);
     }
+
+    db.prepare('DELETE FROM books WHERE id = ? AND user_id = ?').run(req.params.id, userId);
+    addActivity(userId, row.id, row.title, 'deleted');
+
     res.json({ success: true, data: { id: req.params.id } });
   } catch (err) {
     next(err);

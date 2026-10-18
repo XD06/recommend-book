@@ -34,7 +34,7 @@ graph TD
 | `backend/src/routes/` | HTTP 端点 | books / profile / ai 三个路由挂载时统一 `router.use(requireAuth)`；`douban` 的 `/cover` 例外（`<img>` 带不了 Authorization，见 §3 封面获取），其余 douban 端点仍需鉴权；免鉴权的只有 `/api/auth/register`、`/api/auth/login`、`/api/health`、`/api/douban/cover` |
 | `backend/src/services/` | 业务逻辑 | `aiService`（AI 调用 + Agent 循环）、`doubanService`（豆瓣数据源）、`libraryTools`（Agent 的 12 个书库/记忆工具 + 常驻书库概览 + 长期记忆检索注入）、`recommendValidation`（推荐输出回传前的 bookId 清洗与站外去重）、`libraryStats`（统计口径唯一实现） |
 | `backend/src/prompts/` | 提示词模板 | 与 AI 功能一一对应，与路由代码分离 |
-| `backend/src/db/database.ts` | SQLite 建表与访问 | 所有表结构集中于此，`CREATE TABLE IF NOT EXISTS`；`BookRow` / `rowToBook` / `bookToParams` / `loadUserLibrary` 等行级读写辅助也在这里，`books` 路由与 Agent 工具共用同一份，不再各写一套。画像同理：`loadUserProfile` / `updateUserProfileInDb` 被 `GET/PUT /api/profile` 与 Agent 的 `update_user_profile` 共用；`addRecommendationFeedback` / `listRecommendationFeedback` 是推荐采纳反馈的唯一读写口 |
+| `backend/src/db/database.ts` | SQLite 建表与访问 | 所有表结构集中于此，`CREATE TABLE IF NOT EXISTS`；`BookRow` / `rowToBook` / `bookToParams` / `loadUserLibrary` 等行级读写辅助也在这里，`books` 路由与 Agent 工具共用同一份，不再各写一套。画像同理：`loadUserProfile` / `updateUserProfileInDb` 被 `GET/PUT /api/profile` 与 Agent 的 `update_user_profile` 共用；`addRecommendationFeedback` / `listRecommendationFeedback` 是推荐采纳反馈的唯一读写口；`addActivity` / `addActivities` / `listActivities` / `backfillActivities` 是书籍操作流水的唯一读写口 |
 
 注意：`services/geminiService.ts` 是历史命名，它现在调用的是后端 `/api/ai/*` 端点，与 Gemini 无关。
 
@@ -83,6 +83,8 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 - **评分是两套量纲，禁止混算**：`books.douban_data.rating_score` / `Book.doubanRating` 是豆瓣 10 分制的大众评分（客观数据）；用户自评 1–5 星存在 `books.user_data.userRating`（JSON，无列因此无需迁移）。取值必须走 `libraryStats` 的 `resolveDoubanRating` / `resolveUserRating`——**历史数据里 `books.rating` 混着两套**（导入期写过豆瓣分：实测 395 条中 393 条 >5、均值 8.43），两个函数按量纲分流，`>5` 一律归豆瓣。把它当"用户评价倾向"算过的后果是模型被告知"这个用户评价偏高、比较宽容"，而真人只亲手评过 2 本。
 - **画像只有"真的被设置过"才注入**：`user_profiles.reading_level` 在注册时即写入默认值 `beginner`，所以"表里有行 = 有画像"是错的。`libraryTools.isProfileConfigured` 是唯一判据，未设置时注入的是"未设置，可以问"而不是"水平: beginner"。同理，阅读品味画像在**没有任何阅读行为**（0 本读完、无进度）时明确拒绝推断阅读人格，`get_reading_gaps` 也不再把"藏书多而未读"当成积压去劝模型少推荐。
 - **对话历史落 SQLite**：`conversations` 表（一个 user+type 一条）由 `/api/ai/conversation` 的 GET/PUT/DELETE 读写，`AIAdvisor` 挂载时以服务端为准、localStorage 只作即时镜像与首屏缓存。此前该表只有 `CREATE TABLE`、全仓无写入方，历史只在浏览器里且只留 10 轮。
+- **阅读动态来自流水表，不是从 `books` 派生**：`book_activities` 记 `added` / `started` / `finished` / `deleted`，`GET /api/books/activities` 读出（**必须注册在 `GET /:id` 之前**，否则 `activities` 会被当成 bookId 命中详情路由）。新增与删除无法派生：删掉的书行已不存在，新增只有 `created_at` 分不清是导入还是 AI 推荐加入。四个写入点——整库保存时服务端 diff、`DELETE /api/books/:id`、Agent 的 `update_book_status`（**改前状态必须在改写 `book.status` 引用前捕获**，否则 diff 恒为 false）、存量回填。`book_title` 冗余存一份，因为删掉的书靠 `book_id` 反查只会得到 null；书名后来改了、历史动态仍显示旧名，这符合"动态记录当时发生的事"。回填按**类型**判缺失（哪类没有补哪类）而非"表非空就跳过"，且阅读事件时间取书里真实的 `startDate`/`completionDate`，不用 `now()`。
+- **书库排序默认「最近加入」**：`LibraryView` 的 `sortBy` 默认 `added`（`createdAt DESC`）。「最近活动」必须做空值兜底：它取 `completionDate || startDate`，未读书两者皆空时 `''.localeCompare('')` 恒为 0，排序等于没做、退化成 `created_at ASC`，新书永远沉在最后——这正是"每次都要滑到最底部"的根因。现在空值回退 `createdAt`。
 
 **统计口径单一实现**：`backend/src/services/libraryStats.ts` 的 `computeLibraryStats` 同时供 `buildLibraryOverview`（发给模型的概览）和 `GET /api/profile/stats`（统计页）使用。前端不再自行聚合数字，避免页面与模型看到两套口径。
 
