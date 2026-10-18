@@ -86,7 +86,7 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 
 **统计口径单一实现**：`backend/src/services/libraryStats.ts` 的 `computeLibraryStats` 同时供 `buildLibraryOverview`（发给模型的概览）和 `GET /api/profile/stats`（统计页）使用。前端不再自行聚合数字，避免页面与模型看到两套口径。
 
-**封面获取**：豆瓣图床有防盗链（裸 `fetch` 返回 418 `cdn error 001`，必须带 UA + `Referer: https://book.douban.com/`），封面统一经后端 `GET /api/douban/cover` 代理转发，前端通过 `getBookCoverUrl()` 取值——它会把任何形态的来源（豆瓣原始地址、历史上的外部代理地址）都收敛成这个同源 URL。**该路由必须免鉴权**：封面是 `<img src>` 拉取的，浏览器不会附带 `Authorization` 头，挂在 `requireAuth` 后面等于 401 全裂；白名单（`isAllowedImageUrl`）已把目标域名锁死在豆瓣图床，既不含用户数据也构不成 SSRF 跳板。同理它必须豁免限流（整库 400+ 张图放进 100/分钟必然 429），且 helmet 的 `Cross-Origin-Resource-Policy` 需放开为 `cross-origin`（默认 `same-origin` 会让浏览器拒绝跨端口嵌入，而 `fetch` 仍返回 200 —— 极难排查）。
+**封面获取**：豆瓣图床有防盗链（裸 `fetch` 返回 418 `cdn error 001`，必须带 UA + `Referer: https://book.douban.com/`），封面统一经后端 `GET /api/douban/cover` 代理转发，前端通过 `getBookCoverUrl()` 取值——它会把任何形态的来源（豆瓣原始地址、历史上的外部代理地址）都收敛成这个同源 URL。**该路由必须免鉴权**：封面是 `<img src>` 拉取的，浏览器不会附带 `Authorization` 头，挂在 `requireAuth` 后面等于 401 全裂；白名单（`isAllowedImageUrl`）已把目标域名锁死在豆瓣图床，既不含用户数据也构不成 SSRF 跳板。同理它必须豁免限流（整库 400+ 张图放进 100/分钟必然 429），且 helmet 的 `Cross-Origin-Resource-Policy` 需放开为 `cross-origin`（默认 `same-origin` 会让浏览器拒绝跨端口嵌入，而 `fetch` 仍返回 200 —— 极难排查）。**白名单是正则 `^img[1-9]\.douban(io)?\.com$` 而非主机枚举**：豆瓣按 subject id 取模分片到 img1~img9，写死 img1/img2/img3 会让落在 img9 的 126 本书封面全部 403。
 
 ## 4. 核心抽象与设计模式
 

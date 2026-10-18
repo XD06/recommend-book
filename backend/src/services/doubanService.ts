@@ -161,9 +161,28 @@ function escapeForPython(str: string): string {
 }
 
 /**
- * 调用 Python 抓取器获取书籍详情
+ * 调用 Python 抓取器获取书籍详情。
+ *
+ * **必须带"代理失败→直连"降级**：`searchDouban` 一直有这层降级（代理挂了自动
+ * 直连，所以搜索看起来一切正常），但抓取详情这条路径没有 —— 于是出现最坏组合：
+ * 搜索能搜到书、详情永远抓不到，最后静默退化成 suggest 兜底（只有书名/作者/
+ * 封面，没有评分/简介），日志里只有一句"详情抓取失败"，看不出是代理挂了。
+ * 实测 2026-10-18：`DOUBAN_PROXY_URL` 代理 SSL 握手失败（curl 返回 000）、
+ * 直连豆瓣返回 200，冷启动 10 并发全部走到兜底，`scrapeBook` 10/10 返回 null。
  */
 async function scrapeBook(doubanId: string): Promise<CachedBook | null> {
+  if (PROXY_URL) {
+    const viaProxy = await scrapeBookOnce(doubanId, PROXY_URL);
+    if (viaProxy) return viaProxy;
+    // 代理返回 null 时无法区分"书不存在"和"代理挂了"。但入参 doubanId 都来自
+    // 搜索结果，书几乎必然存在，所以重试直连是划算的。
+    console.warn(`[Douban] 代理抓取失败，尝试直连: ${doubanId}`);
+  }
+  return scrapeBookOnce(doubanId, null);
+}
+
+/** 跑一次 Python 抓取器。`proxyUrl` 为 null 表示直连。 */
+async function scrapeBookOnce(doubanId: string, proxyUrl: string | null): Promise<CachedBook | null> {
   try {
     // 检查 Python 环境
     const pythonCmd = await getPythonCmd();
@@ -176,7 +195,7 @@ async function scrapeBook(doubanId: string): Promise<CachedBook | null> {
     // 转义参数防止命令注入
     const safeScriptDir = escapeForPython(path.dirname(scriptPath));
     const safeDoubanId = escapeForPython(doubanId);
-    const safeProxyUrl = PROXY_URL ? escapeForPython(PROXY_URL) : '';
+    const safeProxyUrl = proxyUrl ? escapeForPython(proxyUrl) : '';
 
     // 使用 Python 直接调用抓取函数（参数已转义）
     const pythonCode = `

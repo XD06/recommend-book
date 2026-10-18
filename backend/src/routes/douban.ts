@@ -9,16 +9,19 @@ import { z } from 'zod';
 // 安全辅助函数 — 防止 SSRF
 // ============================================================================
 
-/** 豆瓣图片域名白名单 */
-const DOUBAN_IMAGE_HOSTS = [
-  'img1.doubanio.com',
-  'img2.doubanio.com',
-  'img3.doubanio.com',
-  'img1.douban.com',
-  'img2.douban.com',
-  'img3.douban.com',
-  'book.douban.com',
-];
+/**
+ * 豆瓣图片域名白名单。
+ *
+ * **不能写死 img1/img2/img3**：豆瓣图床按 subject id 取模分片，实测有
+ * img1 ~ img9 九个主机。库里 412 本带封面的书里，`img9.doubanio.com`
+ * 独占 126 本 —— 写死三个分片会让这 126 张封面全部 403（接口返回
+ * "不允许的图片URL域名"），表现为"书库里有三分之一的封面裂了"。
+ *
+ * 用正则而不是枚举，同时保持 SSRF 防护强度：仍然只认豆瓣自己的域名，
+ * 且分片号必须是 1~9 的单个数字（不放行 img10 / img9.evil.com 之类）。
+ */
+const DOUBAN_IMAGE_HOST_RE = /^img[1-9]\.douban(io)?\.com$/;
+const DOUBAN_BOOK_HOST_RE = /^book\.douban\.com$/;
 
 /**
  * 验证 URL 是否属于豆瓣图片域名白名单
@@ -29,8 +32,7 @@ function isAllowedImageUrl(urlStr: string): boolean {
     const url = new URL(urlStr);
     // 只允许 HTTPS
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-    // 检查域名白名单
-    return DOUBAN_IMAGE_HOSTS.some(host => url.hostname === host || url.hostname.endsWith('.' + host));
+    return DOUBAN_IMAGE_HOST_RE.test(url.hostname) || DOUBAN_BOOK_HOST_RE.test(url.hostname);
   } catch {
     return false;
   }
