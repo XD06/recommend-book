@@ -54,6 +54,26 @@ export async function deleteBook(bookId: string): Promise<void> {
   if (!res.ok) throw new Error('删除书籍失败');
 }
 
+/**
+ * 重新抓取单本书的豆瓣数据（用于补全导入时抓取失败的书）。
+ *
+ * 后端只填补空白字段、不覆盖用户手改过的书名/分类/进度/评分，
+ * 所以这个操作可以放心点，不会丢数据。`replaced=false` 表示
+ * 豆瓣上没有比现有更完整的数据，原样保留。
+ */
+export async function refreshBookDouban(bookId: string): Promise<{
+  book: Book;
+  replaced: boolean;
+}> {
+  const res = await fetch(`${API_BASE}/books/${bookId}/refresh-douban`, {
+    method: 'POST',
+    headers: authHeader(),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || '重新抓取失败');
+  return { book: data.data, replaced: !!data.meta?.replaced };
+}
+
 // ============================================================================
 // 用户画像
 // ============================================================================

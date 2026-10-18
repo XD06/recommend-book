@@ -421,6 +421,90 @@ export async function searchBooks(query: string, count: number = 10): Promise<Ar
 }
 
 /**
+ * 书名 → 候选查询串（由严到宽）。
+ *
+ * 豆瓣 suggest 接口对"带副标题的长书名"匹配很差：实测
+ * `巴菲特致股东的信：投资者和公司高管教程（原书第4版）` 返回 0 条，
+ * 而砍成 `巴菲特致股东的信` 立刻命中（第 4 版，评分 8.9）。
+ * 中文书名里冒号/破折号后面基本都是副标题，括号里多是版次说明，
+ * 所以逐级放宽，找到即止。
+ */
+export function titleQueryVariants(title: string): string[] {
+  const out: string[] = [];
+  const push = (s: string) => {
+    const t = s.trim();
+    if (t && !out.includes(t)) out.push(t);
+  };
+
+  push(title);
+  // 去掉括号内容（版次、译者、丛书名等）：（原书第4版）(第2版)【...】
+  const noParen = title.replace(/[（(【\[][^）)】\]]*[）)】\]]/g, '').trim();
+  push(noParen);
+  // 截到第一个副标题分隔符之前
+  const main = noParen.split(/[:：\-—–]/)[0].trim();
+  push(main);
+  // 主标题仍过长时再截一刀，避免把整句话丢给搜索
+  if (main.length > 20) {
+    push(main.slice(0, 20));
+  }
+
+  return out;
+}
+
+/**
+ * 强制重新抓取单本书的豆瓣数据（绕过内存缓存，用于"抓取失败后补抓"）。
+ *
+ * 与 getBookDetail 的区别：那个是"缓存优先、没有才抓"，结果可能拿到旧缓存；
+ * 这个必须真的去豆瓣要一次新数据。所以先按 doubanId 直抓，抓不到再按书名搜。
+ * 返回 null 表示确实没找到，调用方应保留原数据而不是清空。
+ */
+export async function refetchBookDetail(
+  doubanId: string | null | undefined,
+  title: string
+): Promise<DoubanBookData | null> {
+  await loadCache();
+
+  // 1. 有 ID 就直接抓详情（这是最准的路径）
+  if (doubanId) {
+    const scraped = await scrapeBook(doubanId);
+    if (scraped) return scraped.book;
+  }
+
+  // 2. 没 ID 或直抓失败 → 按书名搜索。逐级放宽查询串，
+  //    避免"带副标题的长书名"直接 0 结果。
+  for (const query of titleQueryVariants(title)) {
+    try {
+      const found = await findBookByTitle(query);
+      if (found) return found.book;
+    } catch (error) {
+      console.warn(`[Douban] 重新抓取失败 "${query}":`, (error as Error).message);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 判断一份豆瓣数据是否"够用"。
+ *
+ * 为什么需要：findBookByTitle 在 Python 抓取失败时会用 suggest 结果兜底，
+ * 那份数据只有书名/作者/封面，没有简介与评分。如果拿它去覆盖一本本来
+ * 有完整数据的书，等于把好数据冲成坏数据。所以只在"原数据更差"时才写入。
+ */
+export function doubanDataScore(data: Partial<DoubanBookData> | null | undefined): number {
+  if (!data) return 0;
+  let score = 0;
+  if (data.cover_url) score += 1;
+  if (data.publisher) score += 1;
+  if (data.rating_score && data.rating_score > 0) score += 2;
+  if (data.summary && data.summary.length > 50) score += 2;
+  if (data.pages && data.pages > 0) score += 1;
+  if (data.isbn || data.isbn13) score += 1;
+  if (data.author && data.author.length > 0) score += 1;
+  return score;
+}
+
+/**
  * 获取书籍详情（缓存优先）
  * 
  * 流程：

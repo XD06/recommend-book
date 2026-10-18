@@ -31,7 +31,7 @@ graph TD
 | `App.tsx` + `components/` | 视图渲染与交互 | 只能通过 `services/` 调后端，禁止直接 fetch 其他地址或写数据库 |
 | `services/`（前端） | API 客户端 + Token 管理 | Token 存 localStorage，每次请求带 `Authorization` 头；`API_BASE` 只在 `authService.ts` 定义并导出，其余模块从它导入。两个客户端按域分工：`geminiService.ts`（历史命名，实为 `/api/ai/*` + SSE 解析）管 AI，`librarianService.ts` 管批量入库与分类元数据（`/api/books/batch`、`/api/books/auto-categorize`、`/api/profile/category-meta`），`useBookLibrary` 直接依赖后者 |
 | `hooks/` | 流式请求、防抖、打字机 | 纯逻辑复用层，可调 `services/` |
-| `backend/src/routes/` | HTTP 端点 | books / profile / ai / douban 四个路由挂载时统一 `router.use(requireAuth)`；仅 `/api/auth/register`、`/api/auth/login`、`/api/health` 免鉴权 |
+| `backend/src/routes/` | HTTP 端点 | books / profile / ai 三个路由挂载时统一 `router.use(requireAuth)`；`douban` 的 `/cover` 例外（`<img>` 带不了 Authorization，见 §3 封面获取），其余 douban 端点仍需鉴权；免鉴权的只有 `/api/auth/register`、`/api/auth/login`、`/api/health`、`/api/douban/cover` |
 | `backend/src/services/` | 业务逻辑 | `aiService`（AI 调用 + Agent 循环）、`doubanService`（豆瓣数据源）、`libraryTools`（Agent 的 12 个书库/记忆工具 + 常驻书库概览 + 长期记忆检索注入）、`recommendValidation`（推荐输出回传前的 bookId 清洗与站外去重）、`libraryStats`（统计口径唯一实现） |
 | `backend/src/prompts/` | 提示词模板 | 与 AI 功能一一对应，与路由代码分离 |
 | `backend/src/db/database.ts` | SQLite 建表与访问 | 所有表结构集中于此，`CREATE TABLE IF NOT EXISTS`；`BookRow` / `rowToBook` / `bookToParams` / `loadUserLibrary` 等行级读写辅助也在这里，`books` 路由与 Agent 工具共用同一份，不再各写一套。画像同理：`loadUserProfile` / `updateUserProfileInDb` 被 `GET/PUT /api/profile` 与 Agent 的 `update_user_profile` 共用；`addRecommendationFeedback` / `listRecommendationFeedback` 是推荐采纳反馈的唯一读写口 |
@@ -47,6 +47,8 @@ graph TD
 **书库同步**：`App.tsx` 的 `useBookLibrary` 是书库唯一数据源。挂载时 `GET /api/books` 加载；保存走 `POST /api/books/batch` 全量同步（防抖）。首次登录且后端书库为空时，自动执行一次 localStorage → SQLite 迁移（标记键 `deepread_migrated_to_db`）。
 
 **书籍导入**：`IngestionWizard` → `GET /api/douban/search` 搜豆瓣候选 → 用户选定版本（不自动选）→ `POST /api/ai/classify` AI 补全分类/难度 → 批量保存。
+
+**豆瓣数据补全（导入失败后的补救）**：`POST /api/books/:id/refresh-douban` → `refetchBookDetail(doubanId, title)`（`doubanService`）→ 有 ID 直抓详情，没 ID 或失败则按书名搜、**逐级放宽查询串**（`titleQueryVariants`：原名 → 去括号 → 截掉副标题）。合并时只填补空白：`doubanData` 用 `doubanDataScore` 比较，新数据更完整才整体替换；`author`/`publisher`/`doubanId`/`coverUrl`/`isbn` 仅在原值为空时填入；`title`/`category`/`level`/`userData`/`aiInsight` 一律不动。**这套策略的由来**：书籍导入时抓取可能失败（Python 缺失、超时、限流），失败的书在库里就是"只有书名"，以前只能删掉重加——而那样会连阅读进度、AI 解读、自评星级一起丢掉。
 
 **AI 流式调用（Agent 两阶段）**：`POST /api/ai/*/stream` → 路由先 `createAgentContext(req.user!.id)` 从 SQLite 载入该用户的书库与画像 → `aiService.callAgentStream({ systemPrompt, userPrompt, ctx, handlers, ... })`（原先 13 个位置参数已收敛成这一个 options 对象）：
 1. **思考阶段**（静默、非流式）：多轮工具调用循环，模型通过 `libraryTools` 查询书库与记忆（`search_library`、`get_book_details`、`get_reading_taste_profile`、`update_book_status`、`update_user_profile`、`remember`、`recall_memory` 等 12 个工具；配了 Exa 再 +2 个联网工具），最多 4 轮（`MAX_ROUNDS` 硬编码在 `callAgentStream` 内）后截断。**4 而不是 3**：101 本以上概览不再注入完整书名，模型必须先查工具才能给出真实 bookId，实测 413 本库上"从书架挑三本"恰好用满 3 轮——第 3 轮既是查询轮又是收敛轮，再触发硬闸门就没有余量了。推荐端点额外带 `requireLibraryTool`：模型声称给出了 `libraryMatches` 却一次书目工具都没调，就追加一条纠正消息补 1 轮强制查证（上限 1 轮，不影响其它端点）；
@@ -84,7 +86,7 @@ SSE 语义事件协议（前端 `services/geminiService.ts` 解析）：
 
 **统计口径单一实现**：`backend/src/services/libraryStats.ts` 的 `computeLibraryStats` 同时供 `buildLibraryOverview`（发给模型的概览）和 `GET /api/profile/stats`（统计页）使用。前端不再自行聚合数字，避免页面与模型看到两套口径。
 
-**封面获取**：豆瓣图片有防盗链，封面统一经后端 `GET /api/douban/cover` 代理转发，前端通过 `getBookCoverUrl()` 辅助函数取值，不允许直接引用豆瓣原始 URL。
+**封面获取**：豆瓣图床有防盗链（裸 `fetch` 返回 418 `cdn error 001`，必须带 UA + `Referer: https://book.douban.com/`），封面统一经后端 `GET /api/douban/cover` 代理转发，前端通过 `getBookCoverUrl()` 取值——它会把任何形态的来源（豆瓣原始地址、历史上的外部代理地址）都收敛成这个同源 URL。**该路由必须免鉴权**：封面是 `<img src>` 拉取的，浏览器不会附带 `Authorization` 头，挂在 `requireAuth` 后面等于 401 全裂；白名单（`isAllowedImageUrl`）已把目标域名锁死在豆瓣图床，既不含用户数据也构不成 SSRF 跳板。同理它必须豁免限流（整库 400+ 张图放进 100/分钟必然 429），且 helmet 的 `Cross-Origin-Resource-Policy` 需放开为 `cross-origin`（默认 `same-origin` 会让浏览器拒绝跨端口嵌入，而 `fetch` 仍返回 200 —— 极难排查）。
 
 ## 4. 核心抽象与设计模式
 

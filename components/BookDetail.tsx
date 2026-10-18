@@ -6,6 +6,7 @@ import { Card } from './Card';
 import { Badge } from './Badge';
 import { DifficultyBadge, DifficultyScale } from './DifficultyBadge';
 import { generateInsightStream } from '../services/geminiService';
+import { refreshBookDouban } from '../services/bookService';
 import { AIActivityPanel, useAIActivity } from './AIActivityPanel';
 import { BookQA } from './BookQA';
 import { useToast } from './Toast';
@@ -28,6 +29,7 @@ import {
   TrendUp,
   Brain,
   StopCircle,
+  ArrowsClockwise,
 } from '@phosphor-icons/react';
 
 interface BookDetailProps {
@@ -69,6 +71,8 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
   const [percentageInput, setPercentageInput] = useState(book.userData?.progressPercentage?.toString() || '');
   // AI 解读生成中状态
   const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
+  // 豆瓣数据重新抓取中
+  const [isRefreshingDouban, setIsRefreshingDouban] = useState(false);
 
   // 流式 AI 状态
   const ai = useAIActivity();
@@ -96,6 +100,30 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
       userData: book.userData ? { ...book.userData, totalPages } : (totalPages > 0 ? { totalPages, currentPage: 0, progressPercentage: 0 } : undefined),
     });
     setIsEditing(false);
+  };
+
+  /**
+   * 重新抓取豆瓣数据。
+   *
+   * 存在的理由：导入时豆瓣抓取可能失败（Python 缺失/超时/限流），书库里就留下
+   * 只有书名、没有封面/出版社/评分/简介的书。以前只能删了重加 —— 那会把阅读
+   * 进度、AI 解读、自评星级一起丢掉。后端只填补空白字段，不会覆盖手改过的内容。
+   */
+  const handleRefreshDouban = async () => {
+    setIsRefreshingDouban(true);
+    try {
+      const { book: updated, replaced } = await refreshBookDouban(book.id);
+      onUpdate(updated, true);
+      if (replaced) {
+        showSuccess('已补全豆瓣信息');
+      } else {
+        showSuccess('豆瓣上没有比现在更完整的数据，已保留原信息');
+      }
+    } catch (e: any) {
+      showError(e.message || '重新抓取失败');
+    } finally {
+      setIsRefreshingDouban(false);
+    }
   };
 
   const handleStartReading = async () => {
@@ -389,9 +417,25 @@ export const BookDetail: React.FC<BookDetailProps> = ({ book, onClose, onUpdate 
                     <button
                       onClick={() => setIsEditing(true)}
                       className="ml-1 p-1.5 rounded-lg text-zinc-400 hover:text-zinc-900 hover:bg-zinc-100 transition-colors"
+                      title="编辑书籍信息"
                     >
                       <PencilSimple className="w-3.5 h-3.5" />
                     </button>
+                    {/* 豆瓣数据缺失/不完整时给一个显眼的补抓入口：
+                        抓取失败的书通常正是未读的，所以这个按钮在未读态也要有 */}
+                    {(!doubanData || !doubanData.summary || !doubanData.cover_url) && (
+                      <button
+                        onClick={handleRefreshDouban}
+                        disabled={isRefreshingDouban}
+                        className="ml-1 px-2 py-1 rounded-lg text-[11px] font-medium text-accent-700 bg-accent-50 hover:bg-accent-100 border border-accent-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                        title="从豆瓣重新抓取这本书的封面、出版社、评分与简介"
+                      >
+                        <ArrowsClockwise
+                          className={`w-3 h-3 ${isRefreshingDouban ? 'animate-spin' : ''}`}
+                        />
+                        {isRefreshingDouban ? '抓取中…' : '补全豆瓣信息'}
+                      </button>
+                    )}
                   </div>
                   <h2 className="text-lg font-bold text-zinc-900 leading-tight">{book.title}</h2>
                   <p className="text-sm text-zinc-500 mt-0.5">
@@ -829,7 +873,18 @@ generatingLabel="正在生成解读内容"
                       <BookOpen className="w-8 h-8 text-zinc-300" />
                     </div>
                     <p className="text-sm font-medium text-zinc-600 mb-1">暂无豆瓣数据</p>
-                    <p className="text-xs text-zinc-400">添加书籍时会自动获取豆瓣信息</p>
+                    <p className="text-xs text-zinc-400 mb-4">
+                      这本书导入时没能抓到豆瓣信息，可以重新抓一次
+                    </p>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={handleRefreshDouban}
+                      isLoading={isRefreshingDouban}
+                      leftIcon={<ArrowsClockwise className="w-4 h-4" />}
+                    >
+                      重新抓取豆瓣数据
+                    </Button>
                   </motion.div>
                 )}
               </AnimatePresence>

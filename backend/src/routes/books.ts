@@ -15,6 +15,8 @@ import db, {
 } from '../db/database';
 import { requireAuth } from '../middleware/auth';
 import { AppError } from '../types';
+import { refetchBookDetail, doubanDataScore } from '../services/doubanService';
+import type { DoubanBookData } from '../types';
 
 const router = Router();
 
@@ -144,6 +146,86 @@ router.delete('/:id', (req, res, next) => {
       throw new AppError('BOOK_NOT_FOUND', '书籍不存在', 404);
     }
     res.json({ success: true, data: { id: req.params.id } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================================
+// 重新抓取单本书的豆瓣数据
+//
+// 为什么需要这个端点：书籍导入时的豆瓣抓取可能失败（Python 缺失、超时、
+// 限流），失败的书在库里就是"只有书名+AI 分类"，封面/出版社/评分/简介全空。
+// 以前唯一的补救办法是删掉重加，会连阅读进度、AI 解读、自评星级一起丢掉。
+//
+// 合并策略（关键）：只填补空白，不覆盖用户已有的东西。
+// - doubanData：新数据"更完整"才整体替换（用 doubanDataScore 比较），
+//   否则保留旧的 —— 避免用 suggest 级别的残缺数据冲掉完整的详情。
+// - author / publisher / doubanId / coverUrl / isbn：仅在原值为空时填入。
+// - title / category / level / userData / aiInsight：一律不动。
+//   书名和分类可能是用户手改过的，阅读进度与 AI 解读更是无价。
+// ============================================================================
+
+router.post('/:id/refresh-douban', async (req, res, next) => {
+  try {
+    const userId = req.user!.id;
+    const row = db
+      .prepare('SELECT * FROM books WHERE id = ? AND user_id = ?')
+      .get(req.params.id, userId) as BookRow | undefined;
+
+    if (!row) {
+      throw new AppError('BOOK_NOT_FOUND', '书籍不存在', 404);
+    }
+
+    const book = rowToBook(row);
+    const fetched = await refetchBookDetail(book.doubanId, book.title);
+
+    if (!fetched) {
+      throw new AppError('BOOK_NOT_FOUND', '豆瓣上没找到这本书，请检查书名是否准确', 404);
+    }
+
+    const oldData = book.doubanData as DoubanBookData | undefined;
+    const oldScore = doubanDataScore(oldData);
+    const newScore = doubanDataScore(fetched);
+
+    // 新数据不够完整就不替换，避免把好的冲成差的
+    const shouldReplaceDouban = newScore > oldScore;
+    // 完全没数据时即使得分相同（比如都是 0）也该写入，否则刷新等于没做
+    const hadNothing = !oldData || Object.keys(oldData).length === 0;
+
+    const merged = {
+      ...book,
+      // 只在原值为空时补，保留用户可能手改过的书名/作者/出版社
+      author: book.author || (fetched.author || []).join(', '),
+      publisher: book.publisher || fetched.publisher || undefined,
+      doubanId: book.doubanId || fetched.id,
+      isbn: book.isbn || fetched.isbn || fetched.isbn13 || undefined,
+      pubDate: book.pubDate || fetched.pubdate || fetched.publish_year || undefined,
+      publishYear: book.publishYear || fetched.publish_year || undefined,
+      doubanRating: fetched.rating_score || book.doubanRating,
+      // 封面只在没有时补（已有封面的书不必因为一次刷新就换图）
+      coverUrl: book.coverUrl || (fetched.cover_url
+        ? `${req.protocol}://${req.get('host')}/api/douban/cover?url=${encodeURIComponent(fetched.cover_url)}`
+        : undefined),
+      doubanData: shouldReplaceDouban || hadNothing ? fetched : oldData,
+    };
+
+    db.prepare(UPSERT_BOOK_SQL).run(bookToParams(userId, merged));
+
+    const updated = db
+      .prepare('SELECT * FROM books WHERE id = ? AND user_id = ?')
+      .get(req.params.id, userId) as BookRow;
+
+    res.json({
+      success: true,
+      data: rowToBook(updated),
+      meta: {
+        // 前端据此提示"补全成功"还是"已是最新，没有更完整的数据"
+        replaced: shouldReplaceDouban || hadNothing,
+        oldScore,
+        newScore,
+      },
+    });
   } catch (err) {
     next(err);
   }
