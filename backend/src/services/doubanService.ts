@@ -16,6 +16,8 @@ import * as path from 'path';
 const PROXY_URL = process.env.DOUBAN_PROXY_URL || '';
 const CACHE_FILE = path.join(process.cwd(), '..', 'cache.json'); // 项目根目录的 cache.json
 const USER_CACHE_FILE = path.join(process.cwd(), 'data', 'user-douban-cache.json'); // 运行时抓取的缓存
+/** 单次 Python 抓取的硬超时：抓取器内部 timeout=15s × 3 次重试，留出进程启动余量 */
+const SCRAPE_TIMEOUT_MS = 60_000;
 
 // 内存缓存
 let memoryCache: Map<string, CachedBook> = new Map();
@@ -101,60 +103,55 @@ async function saveUserCache(): Promise<void> {
 
 // ============ douban_mini 抓取器集成 ============
 
-/** Python 可用性检查缓存 */
-let pythonChecked = false;
-let pythonAvailable = false;
+/**
+ * Python 探测结果缓存。
+ *
+ * 必须缓存 **Promise** 而不是布尔值：导入流程用 Promise.all 并发发 10 个
+ * /douban/find，若先置 `checked = true` 再去 execFile 探测，后来者会读到
+ * 尚未赋值的 `available === false`，于是把"正在检测"误判成"未安装"，
+ * 只有第一个请求能抓成功、其余全 404（重启后端后首次导入必现）。
+ * 缓存 in-flight Promise 让并发请求共享同一次探测结果。
+ */
+let pythonProbe: Promise<string | null> | null = null;
 
-/** 检查 Python 是否已安装 */
-async function checkPython(): Promise<boolean> {
-  if (pythonChecked) return pythonAvailable;
-  pythonChecked = true;
-  try {
-    const { execFile } = await import('child_process');
-    await new Promise<void>((resolve, reject) => {
-      execFile('python', ['--version'], { timeout: 5000 }, (err) => {
+function execVersion(cmd: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    import('child_process').then(({ execFile }) => {
+      execFile(cmd, ['--version'], { timeout: 5000 }, (err) => {
         if (err) reject(err);
         else resolve();
       });
-    });
-    pythonAvailable = true;
-    console.log('[Douban] Python 环境检测成功');
-  } catch {
-    // 尝试 python3
-    try {
-      const { execFile } = await import('child_process');
-      await new Promise<void>((resolve, reject) => {
-        execFile('python3', ['--version'], { timeout: 5000 }, (err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-      pythonAvailable = true;
-      console.log('[Douban] Python3 环境检测成功');
-    } catch {
-      pythonAvailable = false;
-      console.warn('[Douban] Python 未安装，豆瓣实时抓取功能不可用（缓存仍可使用）');
-    }
-  }
-  return pythonAvailable;
+    }, reject);
+  });
 }
 
-/** 获取 Python 命令名 */
-async function getPythonCmd(): Promise<string> {
-  const isAvail = await checkPython();
-  if (!isAvail) throw new Error('Python 未安装');
-  // 优先使用 python，回退到 python3
-  try {
-    const { execFile } = await import('child_process');
-    await new Promise<void>((resolve, reject) => {
-      execFile('python', ['--version'], { timeout: 3000 }, (err) => {
-        if (err) reject(err); else resolve();
-      });
-    });
-    return 'python';
-  } catch {
-    return 'python3';
+/** 探测可用的 Python 命令名，失败返回 null */
+async function detectPython(): Promise<string | null> {
+  for (const cmd of ['python', 'python3']) {
+    try {
+      await execVersion(cmd);
+      console.log(`[Douban] Python 环境检测成功 (${cmd})`);
+      return cmd;
+    } catch {
+      // 试下一个
+    }
   }
+  console.warn('[Douban] Python 未安装，豆瓣实时抓取功能不可用（缓存仍可使用）');
+  return null;
+}
+
+/** 检查 Python 是否已安装（并发安全：所有调用方共享同一个探测 Promise） */
+function checkPython(): Promise<boolean> {
+  if (!pythonProbe) pythonProbe = detectPython();
+  return pythonProbe.then((cmd) => cmd !== null);
+}
+
+/** 获取 Python 命令名（探测结果已含命令名，不再重复 execFile） */
+async function getPythonCmd(): Promise<string> {
+  if (!pythonProbe) pythonProbe = detectPython();
+  const cmd = await pythonProbe;
+  if (!cmd) throw new Error('Python 未安装');
+  return cmd;
 }
 
 /** 转义字符串用于 Python 字面量（防注入） */
@@ -206,28 +203,58 @@ asyncio.run(main())
 
     const result = await new Promise<string>((resolve, reject) => {
       const python = spawn(pythonCmd, ['-c', pythonCode], {
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        windowsHide: true,
       });
 
       let stdout = '';
       let stderr = '';
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
+      // 没有超时就会永远挂着：Python 侧代理/豆瓣卡住时前端一直转圈，
+      // 而且并发导入会同时堆住 10 个僵尸进程
+      const timer = setTimeout(() => {
+        try { python.kill('SIGKILL'); } catch { /* 进程可能已退出 */ }
+        finish(() => reject(new Error(`Python 抓取超时（${SCRAPE_TIMEOUT_MS}ms）: ${stderr.slice(-200)}`)));
+      }, SCRAPE_TIMEOUT_MS);
 
       python.stdout.on('data', (data) => { stdout += data.toString(); });
       python.stderr.on('data', (data) => { stderr += data.toString(); });
 
+      // spawn 本身失败（命令不存在、EACCES）只发 error 事件、不发 close，
+      // 不接这个监听 Promise 永远不会 settle
+      python.on('error', (err) => {
+        finish(() => reject(new Error(`Python 进程启动失败: ${err.message}`)));
+      });
+
       python.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`Python 进程退出码 ${code}: ${stderr}`));
+        // 退出码非 0 但 stdout 有合法 JSON 时仍以 stdout 为准：
+        // 抓取器在 finally 里关连接偶发报错，书其实是抓到了
+        if (code !== 0 && !stdout.trim()) {
+          finish(() => reject(new Error(`Python 进程退出码 ${code}: ${stderr}`)));
         } else {
-          resolve(stdout.trim());
+          finish(() => resolve(stdout.trim()));
         }
       });
     });
 
-    if (result === 'null') return null;
+    if (!result || result === 'null') return null;
 
-    const rawBook = JSON.parse(result);
-    
+    // stderr 里的告警不能污染解析：只取最后一个 JSON 行
+    let rawBook: any;
+    try {
+      const jsonLine = result.split('\n').reverse().find((line) => line.trim().startsWith('{'));
+      rawBook = JSON.parse(jsonLine ?? result);
+    } catch (parseErr) {
+      throw new Error(`Python 输出无法解析为 JSON: ${(parseErr as Error).message} | stdout=${result.slice(0, 200)}`);
+    }
+
     // 转换为标准格式
     const cachedBook: CachedBook = {
       book: {
@@ -501,7 +528,42 @@ export async function findBookByTitle(title: string): Promise<{ book: DoubanBook
     console.log(`[Douban] 缓存命中: ${bestMatch.title}`);
   }
 
-  if (!cached) return null;
+  if (!cached) {
+    // 详情抓取失败（Python 缺失 / 超时 / 豆瓣限流）时用 suggest 结果兜底：
+    // suggest 已经给了书名、作者、年份、封面，足以让书进库；只丢简介/评分/短评。
+    // 以前这里 return null → 路由 404 → 前端静默降级成"只有书名"，用户看到的是"添加失败"。
+    console.warn(`[Douban] 详情抓取失败，使用搜索结果兜底: ${bestMatch.title}`);
+    const fallback: CachedBook = {
+      book: {
+        id: bestMatch.id,
+        title: bestMatch.title || title,
+        subtitle: '',
+        original_title: '',
+        author: bestMatch.author ? bestMatch.author.split(/\s*\/\s*/).filter(Boolean) : [],
+        translator: [],
+        publisher: '',
+        producer: '',
+        pubdate: bestMatch.year || '',
+        publish_year: bestMatch.year || '',
+        isbn: '',
+        pages: 0,
+        binding: '',
+        price: '',
+        series: '',
+        cover_url: bestMatch.cover_url || '',
+        rating_score: 0,
+        rating_count: 0,
+        rating_distribution: {},
+        summary: '',
+        reading_status: { reading: 0, read: 0, want_to_read: 0 },
+        url: `https://book.douban.com/subject/${bestMatch.id}/`,
+      },
+      comments: [],
+      scraped_at: new Date().toISOString(),
+    };
+    // 不写进 memoryCache：兜底数据不完整，下次仍应尝试抓取真实详情
+    return { book: fallback.book, comments: fallback.comments };
+  }
 
   return {
     book: cached.book,
