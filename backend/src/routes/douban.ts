@@ -49,6 +49,57 @@ import { requireAuth } from '../middleware/auth';
 
 const router = Router();
 
+/**
+ * 封面代理必须**免鉴权**，且要排在 `router.use(requireAuth)` 之前。
+ *
+ * 原因：封面是 <img src> 拉取的，浏览器不会为它附加 Authorization 头，
+ * 之前挂在 requireAuth 后面 → 一律 401 → 封面全裂。这不是安全降级：
+ * 代理的只是豆瓣公开封面图，白名单已把目标域名限死在豆瓣图床（见
+ * isAllowedImageUrl），既不含用户数据也无法被当成任意 SSRF 跳板。
+ * 若改回鉴权，前端只能把 JWT 塞进 URL，反而会泄漏进日志与 Referer。
+ */
+router.get('/cover', async (req, res, next) => {
+  try {
+    const { url } = req.query;
+
+    if (!url || typeof url !== 'string') {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, '图片URL不能为空', 400);
+    }
+
+    // SSRF 防护：只允许豆瓣图片域名
+    if (!isAllowedImageUrl(url)) {
+      throw new AppError(ErrorCode.VALIDATION_ERROR, '不允许的图片URL域名', 403);
+    }
+
+    // 豆瓣图床对裸 fetch 返回 418 "cdn error 001"，必须带 UA 与 Referer
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
+        'Referer': 'https://book.douban.com/',
+        'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      },
+    });
+
+    if (!response.ok) {
+      throw new AppError(
+        ErrorCode.BOOK_NOT_FOUND,
+        `封面源返回 ${response.status}`,
+        502
+      );
+    }
+
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const arrayBuffer = await response.arrayBuffer();
+    const data = Buffer.from(arrayBuffer);
+
+    res.set('Content-Type', contentType);
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // 豆瓣代理需要登录
 router.use(requireAuth);
 
@@ -110,33 +161,6 @@ router.post('/batch', async (req, res, next) => {
         found: result.length,
       },
     });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// 获取封面图片（二进制）
-router.get('/cover', async (req, res, next) => {
-  try {
-    const { url } = req.query;
-    
-    if (!url || typeof url !== 'string') {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, '图片URL不能为空', 400);
-    }
-
-    // SSRF 防护：只允许豆瓣图片域名
-    if (!isAllowedImageUrl(url)) {
-      throw new AppError(ErrorCode.VALIDATION_ERROR, '不允许的图片URL域名', 403);
-    }
-
-    const response = await fetch(url);
-    const contentType = response.headers.get('content-type') || 'image/jpeg';
-    const arrayBuffer = await response.arrayBuffer();
-    const data = Buffer.from(arrayBuffer);
-    
-    res.set('Content-Type', contentType);
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.send(data);
   } catch (error) {
     next(error);
   }

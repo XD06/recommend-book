@@ -26,7 +26,13 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // 安全中间件
-app.use(helmet());
+// crossOriginResourcePolicy 必须放开：封面由 :3001 提供、页面在 :5173，属于跨源。
+// helmet 默认 same-origin 会让浏览器直接拒绝 <img> 渲染（fetch 却返回 200，
+// 极难排查 —— 表现为"封面全裂但接口正常"）。这里只放宽这一项，
+// CSP / nosniff / frame-ancestors 等其余防护保持默认。
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 
 // CORS
 const allowedOrigins = process.env.CORS_ORIGINS
@@ -70,6 +76,10 @@ const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000'),
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
   message: { success: false, error: '请求过于频繁，请稍后再试' },
+  // 封面代理豁免限流：书库一屏就有几十张 <img>，整库 400+ 张，
+  // 放进 100/分钟的桶里会立刻 429，表现为"封面全裂"。它只是转发豆瓣公开图，
+  // 且目标域名已白名单，不构成放大攻击面。
+  skip: (req) => req.path === '/api/douban/cover',
 });
 app.use(limiter);
 

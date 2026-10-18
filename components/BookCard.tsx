@@ -11,6 +11,8 @@ interface BookCardProps {
   onClick: () => void;
   rank?: number;
   size?: 'small' | 'medium' | 'large';
+  /** 首屏卡片：立即加载封面并提高优先级，其余走 lazy */
+  priority?: boolean;
 }
 
 
@@ -37,6 +39,7 @@ export const BookCard: React.FC<BookCardProps> = ({
   onClick,
   rank,
   size = 'medium',
+  priority = false,
 }) => {
   const StatusIcon = statusIcons[book.status];
   const progress = book.userData?.progressPercentage || 0;
@@ -54,52 +57,34 @@ export const BookCard: React.FC<BookCardProps> = ({
         className="cursor-pointer group"
       >
         <div className="relative aspect-[3/4] rounded-xl overflow-hidden shadow-sm group-hover:shadow-md transition-shadow duration-200">
-          {/* Book Cover - 优先显示豆瓣封面，否则用颜色背景 */}
-          {hasBookCover(book) ? (
+          {/* 色块兜底始终垫在底层：封面加载失败时它自己露出来，
+              不再用 onError 里的 innerHTML 重建 DOM（那会触发一次重排） */}
+          <div
+            className="absolute inset-0 flex items-center justify-center p-4"
+            style={{ backgroundColor: coverColor }}
+          >
+            <div className="text-center">
+              <h4 className="text-white font-semibold text-sm line-clamp-3 drop-shadow-md">
+                {book.title}
+              </h4>
+              <p className="text-white/80 text-xs mt-1 line-clamp-1">
+                {book.author}
+              </p>
+            </div>
+          </div>
+          {hasBookCover(book) && (
             <img
               src={getBookCoverUrl(book)}
               alt={book.title}
               className="absolute inset-0 w-full h-full object-cover"
-              loading="lazy"
+              loading={priority ? 'eager' : 'lazy'}
+              fetchPriority={priority ? 'high' : 'auto'}
+              decoding="async"
               onError={(e) => {
-                // 封面加载失败时显示色块
-                const target = e.target as HTMLImageElement;
-                target.style.display = 'none';
-                const parent = target.parentElement;
-                if (parent) {
-                  parent.style.backgroundColor = coverColor;
-                  parent.innerHTML = `
-                    <div class="absolute inset-0 flex items-center justify-center p-4">
-                      <div class="text-center">
-                        <h4 class="text-white font-semibold text-sm line-clamp-3 drop-shadow-md">${book.title}</h4>
-                        <p class="text-white/80 text-xs mt-1 line-clamp-1">${book.author}</p>
-                      </div>
-                    </div>
-                  `;
-                }
+                // 失败就把自己摘掉，底下的色块兜底自然显示
+                (e.target as HTMLImageElement).style.display = 'none';
               }}
             />
-          ) : book.coverUrl ? (
-            <img
-              src={book.coverUrl}
-              alt={book.title}
-              className="absolute inset-0 w-full h-full object-cover"
-              loading="lazy"
-            />
-          ) : (
-            <div
-              className="absolute inset-0 flex items-center justify-center p-4"
-              style={{ backgroundColor: coverColor }}
-            >
-              <div className="text-center">
-                <h4 className="text-white font-semibold text-sm line-clamp-3 drop-shadow-md">
-                  {book.title}
-                </h4>
-                <p className="text-white/80 text-xs mt-1 line-clamp-1">
-                  {book.author}
-                </p>
-              </div>
-            </div>
           )}
 
           {/* Progress Overlay */}
@@ -145,38 +130,26 @@ export const BookCard: React.FC<BookCardProps> = ({
         <div className="flex gap-4">
           {/* Book Cover - 优先使用豆瓣封面 */}
           <div className="relative shrink-0">
-            {hasBookCover(book) ? (
+            <div
+              className="w-20 h-28 rounded-lg shadow-sm flex items-center justify-center p-2"
+              style={{ backgroundColor: coverColor }}
+            >
+              <span className="text-white font-medium text-xs text-center line-clamp-3">
+                {book.title}
+              </span>
+            </div>
+            {hasBookCover(book) && (
               <img
                 src={getBookCoverUrl(book)}
                 alt={book.title}
-                className="w-20 h-28 rounded-lg shadow-sm object-cover"
-                loading="lazy"
+                className="absolute inset-0 w-20 h-28 rounded-lg shadow-sm object-cover"
+                loading={priority ? 'eager' : 'lazy'}
+                fetchPriority={priority ? 'high' : 'auto'}
+                decoding="async"
                 onError={(e) => {
-                  const target = e.target as HTMLImageElement;
-                  target.style.display = 'none';
-                  const parent = target.parentElement;
-                  if (parent) {
-                    parent.style.backgroundColor = coverColor;
-                    parent.innerHTML = `<span class="text-white font-medium text-xs text-center line-clamp-3 p-2">${book.title}</span>`;
-                  }
+                  (e.target as HTMLImageElement).style.display = 'none';
                 }}
               />
-            ) : book.coverUrl ? (
-              <img
-                src={book.coverUrl}
-                alt={book.title}
-                className="w-20 h-28 rounded-lg shadow-sm object-cover"
-                loading="lazy"
-              />
-            ) : (
-              <div
-                className="w-20 h-28 rounded-lg shadow-sm flex items-center justify-center p-2"
-                style={{ backgroundColor: coverColor }}
-              >
-                <span className="text-white font-medium text-xs text-center line-clamp-3">
-                  {book.title}
-                </span>
-              </div>
             )}
             {rank && (
               <div className="absolute -top-2 -left-2 w-6 h-6 rounded-full bg-accent-600 text-white text-xs font-bold flex items-center justify-center shadow-md">

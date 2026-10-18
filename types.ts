@@ -263,27 +263,57 @@ export const MOOD_OPTIONS: MoodOption[] = [
 // ============================================================================
 
 /**
+ * 把豆瓣原始图片地址转成后端同源代理地址。
+ *
+ * 为什么必须转：豆瓣图床有防盗链，直连 doubanio.com 会返回 418/403
+ * （实测裸 fetch 418 "cdn error 001"，带 UA+Referer 才 200）；而且外部
+ * 代理域名会让几百张封面各走一次跨域 DNS/TLS，首屏并发被拖慢。
+ * 后端 `/api/douban/cover` 免鉴权、带 UA/Referer、且 `max-age=86400`。
+ */
+function toCoverProxy(url: string): string {
+  // 已经是后端代理形式就不再套一层
+  if (url.includes('/douban/cover')) return url;
+  const base = (import.meta.env.VITE_API_BASE as string | undefined)
+    || 'http://localhost:3001/api';
+  return `${base}/douban/cover?url=${encodeURIComponent(url)}`;
+}
+
+/**
  * 获取书籍封面 URL（兼容多种数据格式）
  * 
  * 优先级：
  * 1. coverUrl（代理格式，如 https://douban-proxy.203065.xyz/?url=xxx）
  * 2. doubanData.cover_url（豆瓣原始 URL）
  * 3. doubanData.cover（旧数据兼容）
+ *
+ * 无论命中哪一档，最终都会收敛到后端同源代理（toCoverProxy）。
  */
 export function getBookCoverUrl(book: Book): string | undefined {
-  // 1. 优先使用 coverUrl（代理格式，避免防盗链）
+  let raw: string | undefined;
+  // 1. 优先使用 coverUrl
   if (book.coverUrl) {
-    return book.coverUrl;
+    raw = book.coverUrl;
+  } else if (book.doubanData?.cover_url) {
+    // 2. 使用 doubanData.cover_url
+    raw = book.doubanData.cover_url;
+  } else if ((book.doubanData as any)?.cover) {
+    // 3. 兼容旧数据：doubanData.cover
+    raw = (book.doubanData as any).cover;
   }
-  // 2. 使用 doubanData.cover_url
-  if (book.doubanData?.cover_url) {
-    return book.doubanData.cover_url;
+  if (!raw) return undefined;
+
+  // 外部第三方代理（douban-proxy.xxx/?url=<豆瓣原图>）：抽出内层地址再走本地代理，
+  // 否则那个外部服务挂掉就整库封面全裂（历史上正是这么裂的）
+  if (raw.includes('douban-proxy') && raw.includes('url=')) {
+    try {
+      const inner = new URL(raw).searchParams.get('url');
+      if (inner) return toCoverProxy(inner);
+    } catch {
+      // 解析失败就原样用
+    }
   }
-  // 3. 兼容旧数据：doubanData.cover
-  if ((book.doubanData as any)?.cover) {
-    return (book.doubanData as any).cover;
-  }
-  return undefined;
+
+  return toCoverProxy(raw);
 }
 
 /**

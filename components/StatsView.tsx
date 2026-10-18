@@ -251,9 +251,11 @@ export const StatsView: React.FC<StatsViewProps> = ({ books, onSelectBook }) => 
                   <p className="text-xs text-zinc-500 mt-1">
                     豆瓣均分（10 分制）· 基于 {stats.ratedCount} 本已收录豆瓣评分的书
                   </p>
-                  {myRatingCount > 0 && (
+                  {/* 这两个值在 stats 对象里（stats.myRatingCount / stats.myRatingAvg），
+                      写成裸变量会 ReferenceError，整个统计页被 ErrorBoundary 接住白屏 */}
+                  {stats.myRatingCount > 0 && (
                     <p className="text-xs text-indigo-600 mt-0.5">
-                      你亲手评分过 {myRatingCount} 本，平均 {myRatingAvg.toFixed(1)} 星
+                      你亲手评分过 {stats.myRatingCount} 本，平均 {stats.myRatingAvg.toFixed(1)} 星
                     </p>
                   )}
                 </div>

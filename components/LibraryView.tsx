@@ -32,6 +32,29 @@ type FilterStatus = 'all' | BookStatus;
 type FilterLevel = 'all' | BookLevel;
 type SortOption = 'recent' | 'title' | 'author' | 'rating' | 'progress';
 
+/**
+ * 入场动画的延迟上限。
+ *
+ * 原先是 `delay: index * 0.05`，为十来本书设计；417 本时第 417 张卡片被排到
+ * 20.8 秒后才开始淡入，滚到那儿时它还是 opacity:0 的空位（实测 maxDelayMs=20800）。
+ * 现在只让前 20 张错开，之后的一起出现，最大延迟 0.95s。
+ */
+const STAGGER_LIMIT = 20;
+const entranceDelay = (index: number) => Math.min(index, STAGGER_LIMIT) * 0.05;
+
+/** 首屏直接加载封面的数量，其余交给 loading="lazy" */
+const FIRST_SCREEN_PRIORITY = 20;
+
+/**
+ * 入场动画只在**首次**进入书库时播放。
+ *
+ * `App.tsx` 用 `key={activeTab}` 让切页等于重挂载 —— 那是 SSE 中止契约的前提
+ * （流式组件卸载时才 abort，否则 6 条连接池被占满），不能为了省一次渲染删掉它。
+ * 但代价是每次切回书库都要把 400+ 张卡片的淡入重放一遍（实测切一次 1208ms）。
+ * 这里用模块级标记：重挂载照旧，动画只播一次。
+ */
+let libraryEntrancePlayed = false;
+
 export const LibraryView: React.FC<LibraryViewProps> = ({
   books,
   categories,
@@ -46,6 +69,21 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const [showFilters, setShowFilters] = useState(false);
   const [showInsights, setShowInsights] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>('recent');
+
+  // 首次进入才播入场动画；切 tab 回来直接呈现（组件虽被 App.tsx 的 key 重挂载，
+  // 但模块级标记跨挂载存活）。用 ref 固定本次挂载的判定。
+  const playEntranceRef = React.useRef(!libraryEntrancePlayed);
+  React.useEffect(() => {
+    libraryEntrancePlayed = true;
+  }, []);
+  const cardMotion = () =>
+    playEntranceRef.current
+      ? { initial: { opacity: 0, y: 20 }, animate: { opacity: 1, y: 0 } }
+      : { initial: false as const, animate: { opacity: 1, y: 0 } };
+  const cardTransition = (index: number) =>
+    playEntranceRef.current
+      ? { duration: 0.4, delay: entranceDelay(index), ease: [0.23, 1, 0.32, 1] as const }
+      : { duration: 0 };
 
   // Stats
   const stats = useMemo(() => {
@@ -362,18 +400,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               {filteredBooks.map((book, index) => (
                 <motion.div
                   key={book.id}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{
-                    duration: 0.4,
-                    delay: index * 0.05,
-                    ease: [0.23, 1, 0.32, 1],
-                  }}
+                  {...cardMotion()}
+                  transition={cardTransition(index)}
+                  className="[content-visibility:auto] [contain-intrinsic-size:auto_280px]"
                 >
                   <BookCard
                     book={book}
                     onClick={() => onSelectBook(book)}
                     size="small"
+                    priority={index < FIRST_SCREEN_PRIORITY}
                   />
                 </motion.div>
               ))}
@@ -383,18 +418,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               {filteredBooks.map((book, index) => (
                 <motion.div
                 key={book.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{
-                  duration: 0.4,
-                  delay: index * 0.05,
-                  ease: [0.23, 1, 0.32, 1],
-                }}
+                {...cardMotion()}
+                transition={cardTransition(index)}
+                className="[content-visibility:auto] [contain-intrinsic-size:auto_150px]"
               >
                 <BookCard
                   book={book}
                   onClick={() => onSelectBook(book)}
                   size="medium"
+                  priority={index < FIRST_SCREEN_PRIORITY}
                 />
               </motion.div>
             ))}
